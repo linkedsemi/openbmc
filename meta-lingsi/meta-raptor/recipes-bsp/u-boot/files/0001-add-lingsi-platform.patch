@@ -1,0 +1,294 @@
+From 380757116641d0de1199c4e5388e1d1cc9df4128 Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Thu, 25 Jul 2024 10:47:05 +0800
+Subject: [PATCH] add lingsi platform
+
+---
+Upstream-Status: Pending
+
+ arch/riscv/Kconfig                 |   4 +
+ arch/riscv/dts/lsbmc_evk.dts       | 161 +++++++++++++++++++++++++++++
+ board/lingsi/lsbmc_evk/Kconfig     |  19 ++++
+ board/lingsi/lsbmc_evk/Makefile    |   1 +
+ board/lingsi/lsbmc_evk/lsbmc_evk.c |  10 ++
+ configs/lsbmc_evk_defconfig        |   9 ++
+ include/configs/lsbmc_evk.h        |   8 ++
+ 7 files changed, 212 insertions(+)
+ create mode 100644 arch/riscv/dts/lsbmc_evk.dts
+ create mode 100644 board/lingsi/lsbmc_evk/Kconfig
+ create mode 100644 board/lingsi/lsbmc_evk/Makefile
+ create mode 100644 board/lingsi/lsbmc_evk/lsbmc_evk.c
+ create mode 100644 configs/lsbmc_evk_defconfig
+ create mode 100644 include/configs/lsbmc_evk.h
+
+diff --git a/arch/riscv/Kconfig b/arch/riscv/Kconfig
+index 6d0d812ddb..47267d0a7e 100644
+--- a/arch/riscv/Kconfig
++++ b/arch/riscv/Kconfig
+@@ -39,6 +39,9 @@ config TARGET_TH1520_LPI4A
+ 	bool "Support Sipeed's TH1520 Lichee PI 4A Board"
+ 	select SYS_CACHE_SHIFT_6
+ 
++config TARGET_LSBMC_EVK
++	bool "Support Linkedsemi BMC EVK"
++
+ endchoice
+ 
+ config SYS_ICACHE_OFF
+@@ -82,6 +85,7 @@ source "board/sifive/unmatched/Kconfig"
+ source "board/sipeed/maix/Kconfig"
+ source "board/starfive/visionfive2/Kconfig"
+ source "board/thead/th1520_lpi4a/Kconfig"
++source "board/lingsi/lsbmc_evk/Kconfig"
+ 
+ # platform-specific options below
+ source "arch/riscv/cpu/andesv5/Kconfig"
+diff --git a/arch/riscv/dts/lsbmc_evk.dts b/arch/riscv/dts/lsbmc_evk.dts
+new file mode 100644
+index 0000000000..cfc18ee417
+--- /dev/null
++++ b/arch/riscv/dts/lsbmc_evk.dts
+@@ -0,0 +1,161 @@
++/dts-v1/;
++
++/ {
++    compatible = "linkedsemi,bmc";
++    #address-cells = <2>;
++    #size-cells = <2>;
++
++    memory@40000000 {
++        device_type = "memory";
++        reg = <0x0 0x40000000 0x0 0x40000000>;
++    };
++
++    cpus: cpus {
++        #address-cells = <1>;
++        #size-cells = <0>;
++        timebase-frequency = <800000000>;
++
++        c908_0: cpu@0 {
++            compatible = "thead,c908", "riscv";
++            device_type = "cpu";
++            riscv,isa = "rv64imafdc";
++            reg = <0>;
++            i-cache-block-size = <64>;
++            i-cache-size = <65536>;
++            i-cache-sets = <512>;
++            d-cache-block-size = <64>;
++            d-cache-size = <65536>;
++            d-cache-sets = <512>;
++            next-level-cache = <&l2_cache>;
++            mmu-type = "riscv,sv39";
++
++            cpu0_intc: interrupt-controller {
++                compatible = "riscv,cpu-intc";
++                interrupt-controller;
++                #interrupt-cells = <1>;
++                #address-cells = <1>;
++            };
++        };
++
++        c908_1: cpu@1 {
++            compatible = "thead,c908", "riscv";
++            device_type = "cpu";
++            riscv,isa = "rv64imafdc";
++            reg = <1>;
++            i-cache-block-size = <64>;
++            i-cache-size = <65536>;
++            i-cache-sets = <512>;
++            d-cache-block-size = <64>;
++            d-cache-size = <65536>;
++            d-cache-sets = <512>;
++            next-level-cache = <&l2_cache>;
++            mmu-type = "riscv,sv39";
++
++            cpu1_intc: interrupt-controller {
++                compatible = "riscv,cpu-intc";
++                interrupt-controller;
++                #interrupt-cells = <1>;
++                #address-cells = <1>;
++            };
++        };
++
++        c908_2: cpu@2 {
++            compatible = "thead,c908", "riscv";
++            device_type = "cpu";
++            riscv,isa = "rv64imafdc";
++            reg = <2>;
++            i-cache-block-size = <64>;
++            i-cache-size = <65536>;
++            i-cache-sets = <512>;
++            d-cache-block-size = <64>;
++            d-cache-size = <65536>;
++            d-cache-sets = <512>;
++            next-level-cache = <&l2_cache>;
++            mmu-type = "riscv,sv39";
++
++            cpu2_intc: interrupt-controller {
++                compatible = "riscv,cpu-intc";
++                interrupt-controller;
++                #interrupt-cells = <1>;
++                #address-cells = <1>;
++            };
++        };
++
++        c908_3: cpu@3 {
++            compatible = "thead,c908", "riscv";
++            device_type = "cpu";
++            riscv,isa = "rv64imafdc";
++            reg = <3>;
++            i-cache-block-size = <64>;
++            i-cache-size = <65536>;
++            i-cache-sets = <512>;
++            d-cache-block-size = <64>;
++            d-cache-size = <65536>;
++            d-cache-sets = <512>;
++            next-level-cache = <&l2_cache>;
++            mmu-type = "riscv,sv39";
++
++            cpu3_intc: interrupt-controller {
++                compatible = "riscv,cpu-intc";
++                interrupt-controller;
++                #interrupt-cells = <1>;
++                #address-cells = <1>;
++            };
++        };
++        l2_cache: l2-cache {
++            compatible = "cache";
++            cache-block-size = <64>;
++            cache-level = <2>;
++            cache-size = <1048576>;
++            cache-sets = <1024>;
++            cache-unified;
++        };
++    };
++
++    soc {
++        compatible = "simple-bus";
++        interrupt-parent = <&plic>;
++        #address-cells = <2>;
++        #size-cells = <2>;
++        ranges;
++
++        plic: interrupt-controller@b0000000 {
++            compatible = "riscv,plic0";
++            reg = <0x00 0xb0000000 0x0 0x01000000>;
++            interrupts-extended = <&cpu0_intc 0xffffffff>, <&cpu0_intc 9>,
++                                  <&cpu1_intc 0xffffffff>, <&cpu1_intc 9>,
++                                  <&cpu2_intc 0xffffffff>, <&cpu2_intc 9>,
++                                  <&cpu3_intc 0xffffffff>, <&cpu3_intc 9>;
++            interrupt-controller;
++            #address-cells = <0>;
++            #interrupt-cells = <2>;
++            riscv,ndev = <240>;
++            riscv,max-priority = <7>;
++        };
++
++        clint: timer@b4000000 {
++            compatible = "riscv,clint0";
++            reg = <0x00 0xb4000000 0x0 0x00010000>;
++            interrupts-extended = <&cpu0_intc 3>, <&cpu0_intc 7>,
++                                  <&cpu1_intc 3>, <&cpu1_intc 7>,
++                                  <&cpu2_intc 3>, <&cpu2_intc 7>,
++                                  <&cpu3_intc 3>, <&cpu3_intc 7>;
++        };
++
++        uart0: serial@10015000 {
++            compatible = "ns16550";
++            reg = <0x00 0x10015000 0x0 0x1000>;
++            interrupts = <16 1>;
++            clock-frequency = <4000000>;
++            current-speed = <19200>;
++            reg-shift = <2>;
++            reg-io-width = <4>;
++            status = "okay";
++        };
++    };
++
++    chosen {
++        bootargs = "console=ttyS0,19200 earlycon root=/dev/ram0 rw rootfstype=ramfs log_buf_len=16M";
++        stdout-path = &uart0;
++    };
++};
+diff --git a/board/lingsi/lsbmc_evk/Kconfig b/board/lingsi/lsbmc_evk/Kconfig
+new file mode 100644
+index 0000000000..697ed5f6c6
+--- /dev/null
++++ b/board/lingsi/lsbmc_evk/Kconfig
+@@ -0,0 +1,19 @@
++if TARGET_LSBMC_EVK
++
++config SYS_BOARD
++    default "lsbmc_evk"
++
++config SYS_VENDOR
++    default "lingsi"
++
++config SYS_CONFIG_NAME
++    default "lsbmc_evk"
++
++config SYS_CPU
++    default "generic"
++
++config BOARD_SPECIFIC_OPTIONS # dummy
++	def_bool y
++	select GENERIC_RISCV
++    imply SMP
++endif
+diff --git a/board/lingsi/lsbmc_evk/Makefile b/board/lingsi/lsbmc_evk/Makefile
+new file mode 100644
+index 0000000000..710b87d190
+--- /dev/null
++++ b/board/lingsi/lsbmc_evk/Makefile
+@@ -0,0 +1 @@
++obj-y := lsbmc_evk.o
+\ No newline at end of file
+diff --git a/board/lingsi/lsbmc_evk/lsbmc_evk.c b/board/lingsi/lsbmc_evk/lsbmc_evk.c
+new file mode 100644
+index 0000000000..cf229d201b
+--- /dev/null
++++ b/board/lingsi/lsbmc_evk/lsbmc_evk.c
+@@ -0,0 +1,10 @@
++#include <init.h>
++
++DECLARE_GLOBAL_DATA_PTR;
++
++
++int board_init()
++{
++
++    return 0;
++}
+\ No newline at end of file
+diff --git a/configs/lsbmc_evk_defconfig b/configs/lsbmc_evk_defconfig
+new file mode 100644
+index 0000000000..8ea7904cb7
+--- /dev/null
++++ b/configs/lsbmc_evk_defconfig
+@@ -0,0 +1,9 @@
++CONFIG_RISCV=y
++CONFIG_ARCH_RV64I=y
++CONFIG_RISCV_SMODE=y
++CONFIG_TARGET_LSBMC_EVK=y
++CONFIG_SYS_LOAD_ADDR=0x40200000
++CONFIG_TEXT_BASE=0x40200000
++CONFIG_HAS_CUSTOM_SYS_INIT_SP_ADDR=y
++CONFIG_CUSTOM_SYS_INIT_SP_ADDR=0x40200000
++CONFIG_DEFAULT_DEVICE_TREE="lsbmc_evk"
+diff --git a/include/configs/lsbmc_evk.h b/include/configs/lsbmc_evk.h
+new file mode 100644
+index 0000000000..02227f8a88
+--- /dev/null
++++ b/include/configs/lsbmc_evk.h
+@@ -0,0 +1,8 @@
++#ifndef LSBMC_EVK_CONFIG_H_
++#define LSBMC_EVK_CONFIG_H_
++
++
++//#define CONFIG_SYS_MALLOC_LEN 0x800000
++
++
++#endif
+-- 
+2.39.2
+

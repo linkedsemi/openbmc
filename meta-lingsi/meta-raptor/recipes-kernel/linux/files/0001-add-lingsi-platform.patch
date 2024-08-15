@@ -1,0 +1,254 @@
+From 4d529269598386b0e96bb8b721ddcbc8a096a2ae Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Thu, 25 Jul 2024 10:40:33 +0800
+Subject: [PATCH] add lingsi platform
+
+---
+Upstream-Status: Pending
+
+ arch/riscv/Kconfig.socs                    |   8 +
+ arch/riscv/boot/dts/Makefile               |   1 +
+ arch/riscv/boot/dts/lingsi/Makefile        |   2 +
+ arch/riscv/boot/dts/lingsi/lsbmc_fpga.dts  |  10 ++
+ arch/riscv/boot/dts/lingsi/lsbmc_fpga.dtsi | 162 +++++++++++++++++++++
+ arch/riscv/configs/defconfig               |   2 +
+ 6 files changed, 185 insertions(+)
+ create mode 100644 arch/riscv/boot/dts/lingsi/Makefile
+ create mode 100755 arch/riscv/boot/dts/lingsi/lsbmc_fpga.dts
+ create mode 100755 arch/riscv/boot/dts/lingsi/lsbmc_fpga.dtsi
+
+diff --git a/arch/riscv/Kconfig.socs b/arch/riscv/Kconfig.socs
+index 6833d01e2e70..8cb01d04ad8f 100644
+--- a/arch/riscv/Kconfig.socs
++++ b/arch/riscv/Kconfig.socs
+@@ -65,6 +65,14 @@ config SOC_VIRT
+ 	help
+ 	  This enables support for QEMU Virt Machine.
+ 
++config ARCH_LINGSI
++	def_bool SOC_LINGSI
++
++config SOC_LINGSI
++	bool "LinkedSemi SoCs"
++	help
++	  This enables support for LinkedSemi SoC platform hardware.
++
+ config ARCH_CANAAN
+ 	def_bool SOC_CANAAN
+ 
+diff --git a/arch/riscv/boot/dts/Makefile b/arch/riscv/boot/dts/Makefile
+index f60a280abb15..7a4ccf816295 100644
+--- a/arch/riscv/boot/dts/Makefile
++++ b/arch/riscv/boot/dts/Makefile
+@@ -6,5 +6,6 @@ subdir-y += renesas
+ subdir-y += sifive
+ subdir-y += starfive
+ subdir-y += thead
++subdir-y += lingsi
+ 
+ obj-$(CONFIG_BUILTIN_DTB) := $(addsuffix /, $(subdir-y))
+diff --git a/arch/riscv/boot/dts/lingsi/Makefile b/arch/riscv/boot/dts/lingsi/Makefile
+new file mode 100644
+index 000000000000..e2e37351bcf0
+--- /dev/null
++++ b/arch/riscv/boot/dts/lingsi/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0
++dtb-$(CONFIG_ARCH_LINGSI) += lsbmc_fpga.dtb
+diff --git a/arch/riscv/boot/dts/lingsi/lsbmc_fpga.dts b/arch/riscv/boot/dts/lingsi/lsbmc_fpga.dts
+new file mode 100755
+index 000000000000..3d7903e03e78
+--- /dev/null
++++ b/arch/riscv/boot/dts/lingsi/lsbmc_fpga.dts
+@@ -0,0 +1,10 @@
++/dts-v1/;
++
++#include "lsbmc_fpga.dtsi"
++
++/ {
++    chosen {
++        bootargs = "console=ttyS0,19200 earlycon root=/dev/ram0 rw rootfstype=ramfs log_buf_len=16M";
++        stdout-path = &uart0;
++    };
++};
+diff --git a/arch/riscv/boot/dts/lingsi/lsbmc_fpga.dtsi b/arch/riscv/boot/dts/lingsi/lsbmc_fpga.dtsi
+new file mode 100755
+index 000000000000..9c739ab43c28
+--- /dev/null
++++ b/arch/riscv/boot/dts/lingsi/lsbmc_fpga.dtsi
+@@ -0,0 +1,162 @@
++// SPDX-License-Identifier: (GPL-2.0 OR MIT)
++/* Copyright (c) 2024 Linkedsemi */
++
++/ {
++    compatible = "linkedsemi,bmc";
++    #address-cells = <2>;
++    #size-cells = <2>;
++
++    memory@40000000 {
++        device_type = "memory";
++        reg = <0x0 0x40000000 0x0 0x40000000>;
++    };
++
++    cpus: cpus {
++        #address-cells = <1>;
++        #size-cells = <0>;
++        timebase-frequency = <800000000>;
++
++        c908_0: cpu@0 {
++            compatible = "thead,c908", "riscv";
++            device_type = "cpu";
++            riscv,isa = "rv64imafdc";
++            reg = <0>;
++            i-cache-block-size = <64>;
++            i-cache-size = <65536>;
++            i-cache-sets = <512>;
++            d-cache-block-size = <64>;
++            d-cache-size = <65536>;
++            d-cache-sets = <512>;
++            next-level-cache = <&l2_cache>;
++            mmu-type = "riscv,sv39";
++
++            cpu0_intc: interrupt-controller {
++                compatible = "riscv,cpu-intc";
++                interrupt-controller;
++                #interrupt-cells = <1>;
++                #address-cells = <1>;
++            };
++        };
++
++        c908_1: cpu@1 {
++            compatible = "thead,c908", "riscv";
++            device_type = "cpu";
++            riscv,isa = "rv64imafdc";
++            reg = <1>;
++            i-cache-block-size = <64>;
++            i-cache-size = <65536>;
++            i-cache-sets = <512>;
++            d-cache-block-size = <64>;
++            d-cache-size = <65536>;
++            d-cache-sets = <512>;
++            next-level-cache = <&l2_cache>;
++            mmu-type = "riscv,sv39";
++
++            cpu1_intc: interrupt-controller {
++                compatible = "riscv,cpu-intc";
++                interrupt-controller;
++                #interrupt-cells = <1>;
++                #address-cells = <1>;
++            };
++        };
++
++        c908_2: cpu@2 {
++            compatible = "thead,c908", "riscv";
++            device_type = "cpu";
++            riscv,isa = "rv64imafdc";
++            reg = <2>;
++            i-cache-block-size = <64>;
++            i-cache-size = <65536>;
++            i-cache-sets = <512>;
++            d-cache-block-size = <64>;
++            d-cache-size = <65536>;
++            d-cache-sets = <512>;
++            next-level-cache = <&l2_cache>;
++            mmu-type = "riscv,sv39";
++
++            cpu2_intc: interrupt-controller {
++                compatible = "riscv,cpu-intc";
++                interrupt-controller;
++                #interrupt-cells = <1>;
++                #address-cells = <1>;
++            };
++        };
++
++        c908_3: cpu@3 {
++            compatible = "thead,c908", "riscv";
++            device_type = "cpu";
++            riscv,isa = "rv64imafdc";
++            reg = <3>;
++            i-cache-block-size = <64>;
++            i-cache-size = <65536>;
++            i-cache-sets = <512>;
++            d-cache-block-size = <64>;
++            d-cache-size = <65536>;
++            d-cache-sets = <512>;
++            next-level-cache = <&l2_cache>;
++            mmu-type = "riscv,sv39";
++
++            cpu3_intc: interrupt-controller {
++                compatible = "riscv,cpu-intc";
++                interrupt-controller;
++                #interrupt-cells = <1>;
++                #address-cells = <1>;
++            };
++        };
++        l2_cache: l2-cache {
++            compatible = "cache";
++            cache-block-size = <64>;
++            cache-level = <2>;
++            cache-size = <1048576>;
++            cache-sets = <1024>;
++            cache-unified;
++        };
++    };
++
++    soc {
++        compatible = "simple-bus";
++        interrupt-parent = <&plic>;
++        #address-cells = <2>;
++        #size-cells = <2>;
++        ranges;
++
++        plic: interrupt-controller@b0000000 {
++            compatible = "riscv,plic0";
++            reg = <0x00 0xb0000000 0x0 0x01000000>;
++            interrupts-extended = <&cpu0_intc 0xffffffff>, <&cpu0_intc 9>,
++                                  <&cpu1_intc 0xffffffff>, <&cpu1_intc 9>,
++                                  <&cpu2_intc 0xffffffff>, <&cpu2_intc 9>,
++                                  <&cpu3_intc 0xffffffff>, <&cpu3_intc 9>;
++            interrupt-controller;
++            #address-cells = <0>;
++            #interrupt-cells = <2>;
++            riscv,ndev = <240>;
++            riscv,max-priority = <7>;
++        };
++
++        clint: timer@b4000000 {
++            compatible = "riscv,clint0";
++            reg = <0x00 0xb4000000 0x0 0x00010000>;
++            interrupts-extended = <&cpu0_intc 3>, <&cpu0_intc 7>,
++                                  <&cpu1_intc 3>, <&cpu1_intc 7>,
++                                  <&cpu2_intc 3>, <&cpu2_intc 7>,
++                                  <&cpu3_intc 3>, <&cpu3_intc 7>;
++        };
++
++        uart0: serial@10015000 {
++            compatible = "ns16550";
++            reg = <0x00 0x10015000 0x0 0x1000>;
++            interrupts = <16 1>;
++            clock-frequency = <4000000>;
++            current-speed = <19200>;
++            reg-shift = <2>;
++            reg-io-width = <4>;
++            status = "okay";
++        };
++    };
++
++    chosen {
++        bootargs = "console=ttyS0,19200 earlycon root=/dev/ram0 rw rootfstype=ramfs";
++        stdout-path = &uart0;
++    };
++};
+diff --git a/arch/riscv/configs/defconfig b/arch/riscv/configs/defconfig
+index ab86ec3b9eab..52068630fb7a 100644
+--- a/arch/riscv/configs/defconfig
++++ b/arch/riscv/configs/defconfig
+@@ -240,3 +240,5 @@ CONFIG_RCU_EQS_DEBUG=y
+ # CONFIG_FTRACE is not set
+ # CONFIG_RUNTIME_TESTING_MENU is not set
+ CONFIG_MEMTEST=y
++CONFIG_SOC_LINGSI=y
++CONFIG_ARCH_LINGSI=y
+-- 
+2.39.2
+

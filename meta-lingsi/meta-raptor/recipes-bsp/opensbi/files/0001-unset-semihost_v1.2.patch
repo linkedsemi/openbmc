@@ -1,0 +1,24 @@
+From 5a116fdfcfabe6194cc2a073268709e27e48dd88 Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Fri, 2 Aug 2024 13:49:16 +0800
+Subject: [PATCH] unset semihost
+
+---
+Upstream-Status: Pending
+
+ platform/generic/configs/defconfig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/platform/generic/configs/defconfig b/platform/generic/configs/defconfig
+index 47fca95..838eeb2 100644
+--- a/platform/generic/configs/defconfig
++++ b/platform/generic/configs/defconfig
+@@ -34,4 +34,4 @@ CONFIG_FDT_SERIAL_XILINX_UARTLITE=y
+ CONFIG_FDT_TIMER=y
+ CONFIG_FDT_TIMER_MTIMER=y
+ CONFIG_FDT_TIMER_PLMT=y
+-CONFIG_SERIAL_SEMIHOSTING=y
++CONFIG_SERIAL_SEMIHOSTING=n
+-- 
+2.39.2
+

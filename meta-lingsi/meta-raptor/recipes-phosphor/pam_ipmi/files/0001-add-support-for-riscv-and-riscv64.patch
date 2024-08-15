@@ -1,0 +1,30 @@
+From c6663c9887a5c1b3863af3f58a580cf85ab30b19 Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Fri, 2 Aug 2024 15:11:53 +0800
+Subject: [PATCH] add support for riscv and riscv64
+
+---
+ configure.ac | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 668f744..21c3d2b 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -21,11 +21,11 @@ AC_PROG_MAKE_SET
+ AC_CANONICAL_TARGET
+ TARGET_OS_ARCH=""
+ AS_CASE([$target_cpu],
+-        [x86_64|aarch64*|mips64*|ppc64*|sparc64],
++        [x86_64|aarch64*|mips64*|ppc64*|sparc64|riscv64],
+         [
+             TARGET_OS_ARCH="64"
+         ],
+-        [i?86|arm*|mips*|ppc*|sparc],
++        [i?86|arm*|mips*|ppc*|sparc|riscv],
+         [
+             TARGET_OS_ARCH="32"
+         ])
+-- 
+2.39.2
+
