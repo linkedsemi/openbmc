@@ -1,0 +1,44 @@
+From cab5a8a89273e6b4fa1e64ad033d3343e3d162f7 Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Fri, 26 Jul 2024 14:32:21 +0800
+Subject: [PATCH 8/8] add lingsi_host_vuart
+
+---
+Upstream-Status: Pending
+
+ drivers/char/ipmi/lingsi/Kconfig  | 6 ++++++
+ drivers/char/ipmi/lingsi/Makefile | 1 +
+ 2 files changed, 7 insertions(+)
+
+diff --git a/drivers/char/ipmi/lingsi/Kconfig b/drivers/char/ipmi/lingsi/Kconfig
+index 12d2049f7c67..cd3a5d542207 100644
+--- a/drivers/char/ipmi/lingsi/Kconfig
++++ b/drivers/char/ipmi/lingsi/Kconfig
+@@ -43,6 +43,12 @@ config LINGSI_HOST_DEV_BMC
+     help
+       TBD
+ 
++config LINGSI_HOST_VUART
++    tristate "LINGSI_HOST_VUART"
++    depends on LINGSI_ESPI || LINGSI_LPC
++    help
++      TBD
++
+ config LINGSI_VUART_BMC
+     tristate "LINGSI_VUART_BMC"
+     depends on LINGSI_ESPI || LINGSI_LPC
+diff --git a/drivers/char/ipmi/lingsi/Makefile b/drivers/char/ipmi/lingsi/Makefile
+index f936bab9f289..8f94bf855666 100644
+--- a/drivers/char/ipmi/lingsi/Makefile
++++ b/drivers/char/ipmi/lingsi/Makefile
+@@ -2,6 +2,7 @@
+ obj-$(CONFIG_LINGSI_ESPI)          += lingsi_espi.o lingsi_espi_lpc_common.o
+ obj-$(CONFIG_LINGSI_LPC)           += lingsi_lpc.o lingsi_espi_lpc_common.o
+ obj-$(CONFIG_LINGSI_HOST_DEV_BMC)  += lingsi_host_dev.o
++obj-$(CONFIG_LINGSI_HOST_VUART)  += lingsi_host_vuart.o
+ obj-$(CONFIG_LINGSI_VUART_BMC)     += lingsi_vuart.o
+ obj-$(CONFIG_LINGSI_SIO_BMC)       += lingsi_sio.o
+ obj-$(CONFIG_LINGSI_KCS_IPMI_BMC)  += lingsi_kcs.o
+-- 
+2.39.2
+

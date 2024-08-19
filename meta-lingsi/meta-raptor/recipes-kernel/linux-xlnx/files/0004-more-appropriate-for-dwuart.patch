@@ -1,0 +1,27 @@
+From 9b2b22b2e0a2515dfdbd665d53c9976746719600 Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Fri, 19 Jul 2024 16:21:46 +0800
+Subject: [PATCH 4/4] more appropriate for dwuart
+
+---
+Upstream-Status: Pending
+
+ drivers/tty/serial/8250/8250_early.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/tty/serial/8250/8250_early.c b/drivers/tty/serial/8250/8250_early.c
+index f271becfc46c..6337add1f4c4 100644
+--- a/drivers/tty/serial/8250/8250_early.c
++++ b/drivers/tty/serial/8250/8250_early.c
+@@ -143,7 +143,7 @@ static void __init init_port(struct earlycon_device *device)
+ 	serial8250_early_out(port, UART_MCR, 0x3);	/* DTR + RTS */
+ 
+ 	if (port->uartclk) {
+-		divisor = DIV_ROUND_CLOSEST(port->uartclk, 16 * device->baud);
++		divisor = DIV_ROUND_DOWN_ULL(port->uartclk, 16 * device->baud);
+ 		c = serial8250_early_in(port, UART_LCR);
+ 		serial8250_early_out(port, UART_LCR, c | UART_LCR_DLAB);
+ 		serial8250_early_out(port, UART_DLL, divisor & 0xff);
+-- 
+2.39.2
+

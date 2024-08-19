@@ -1,0 +1,4603 @@
+From d7735cc6270ad0a0869c91fbcb314d9acbc978e4 Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Mon, 12 Aug 2024 16:23:09 +0800
+Subject: [PATCH 2/3] add some driver for lingsi platform     1. gpio & sgpio  
+   2. ipmi     3. video
+
+---
+Upstream-Status: Pending
+
+ drivers/char/ipmi/Kconfig                     |    2 +
+ drivers/char/ipmi/Makefile                    |    1 +
+ drivers/char/ipmi/lingsi/Kconfig              |   58 +
+ drivers/char/ipmi/lingsi/Makefile             |    9 +
+ drivers/char/ipmi/lingsi/lingsi_espi.c        |  504 +++++++++
+ .../char/ipmi/lingsi/lingsi_espi_lpc_common.c |  106 ++
+ .../char/ipmi/lingsi/lingsi_espi_lpc_common.h |   67 ++
+ drivers/char/ipmi/lingsi/lingsi_host_dev.c    |  176 +++
+ drivers/char/ipmi/lingsi/lingsi_host_vuart.c  |  294 +++++
+ drivers/char/ipmi/lingsi/lingsi_kcs.c         |  304 +++++
+ drivers/char/ipmi/lingsi/lingsi_lpc.c         |  242 ++++
+ drivers/char/ipmi/lingsi/lingsi_mmbi.c        |  221 ++++
+ drivers/char/ipmi/lingsi/lingsi_sio.c         |  202 ++++
+ drivers/char/ipmi/lingsi/lingsi_vuart.c       |  156 +++
+ drivers/char/ipmi/lingsi/lingsi_vuart.h       |   15 +
+ drivers/gpio/Kconfig                          |   16 +
+ drivers/gpio/Makefile                         |    2 +
+ drivers/gpio/gpio-lingsi-sgpio.c              |  637 +++++++++++
+ drivers/gpio/gpio-lingsi.c                    |  347 ++++++
+ drivers/media/platform/Kconfig                |    1 +
+ drivers/media/platform/Makefile               |    1 +
+ drivers/media/platform/lingsi/Kconfig         |   11 +
+ drivers/media/platform/lingsi/Makefile        |    2 +
+ drivers/media/platform/lingsi/lingsi-video.c  | 1002 +++++++++++++++++
+ 24 files changed, 4376 insertions(+)
+ create mode 100644 drivers/char/ipmi/lingsi/Kconfig
+ create mode 100644 drivers/char/ipmi/lingsi/Makefile
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_espi.c
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.h
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_host_dev.c
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_host_vuart.c
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_kcs.c
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_lpc.c
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_mmbi.c
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_sio.c
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_vuart.c
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_vuart.h
+ create mode 100644 drivers/gpio/gpio-lingsi-sgpio.c
+ create mode 100644 drivers/gpio/gpio-lingsi.c
+ create mode 100644 drivers/media/platform/lingsi/Kconfig
+ create mode 100644 drivers/media/platform/lingsi/Makefile
+ create mode 100644 drivers/media/platform/lingsi/lingsi-video.c
+
+diff --git a/drivers/char/ipmi/Kconfig b/drivers/char/ipmi/Kconfig
+index f4adc6feb3b2..f39618475ac6 100644
+--- a/drivers/char/ipmi/Kconfig
++++ b/drivers/char/ipmi/Kconfig
+@@ -188,3 +188,5 @@ config IPMB_DEVICE_INTERFACE
+ 	  Provides a driver for a device (Satellite MC) to
+ 	  receive requests and send responses back to the BMC via
+ 	  the IPMB interface. This module requires I2C support.
++
++source "drivers/char/ipmi/lingsi/Kconfig"
+diff --git a/drivers/char/ipmi/Makefile b/drivers/char/ipmi/Makefile
+index cb6138b8ded9..2b335be28e7c 100644
+--- a/drivers/char/ipmi/Makefile
++++ b/drivers/char/ipmi/Makefile
+@@ -31,3 +31,4 @@ obj-$(CONFIG_ASPEED_KCS_IPMI_BMC) += kcs_bmc_aspeed.o
+ obj-$(CONFIG_NPCM7XX_KCS_IPMI_BMC) += kcs_bmc_npcm7xx.o
+ obj-$(CONFIG_IPMB_DEVICE_INTERFACE) += ipmb_dev_int.o
+ obj-$(CONFIG_SSIF_IPMI_BMC) += ssif_bmc.o
++obj-y += lingsi/
+diff --git a/drivers/char/ipmi/lingsi/Kconfig b/drivers/char/ipmi/lingsi/Kconfig
+new file mode 100644
+index 000000000000..cd3a5d542207
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/Kconfig
+@@ -0,0 +1,58 @@
++# SPDX-License-Identifier: GPL-2.0-only
++if ARCH_LINGSI || COMPILE_TEST
++
++config LINGSI_ESPI
++    tristate "LINGSI_ESPI"
++    help
++      TBD
++
++config LINGSI_LPC
++    tristate "LINGSI_LPC"
++    help
++      TBD
++
++config LINGSI_KCS_IPMI_BMC
++    select IPMI_KCS_BMC
++    depends on LINGSI_ESPI || LINGSI_LPC
++    tristate "LS KCS IPMI BMC driver"
++    help
++      Provides a driver for the KCS (Keyboard Controller Style) IPMI
++      interface found on LS SOCs.
++
++      The driver implements the BMC side of the KCS contorller, it
++      provides the access of KCS IO space for BMC side.
++
++      This support is also available as a module.  If so, the module
++      will be called LINGSI_kcs.
++
++config LINGSI_MMBI_IPMI_BMC
++    tristate "LINGSI_MMBI_IPMI_BMC"
++    depends on LINGSI_ESPI || LINGSI_LPC
++    help
++      TBD
++
++config LINGSI_SIO_BMC
++    tristate "LINGSI_SIO_BMC"
++    depends on LINGSI_ESPI || LINGSI_LPC
++    help
++      TBD
++
++config LINGSI_HOST_DEV_BMC
++    tristate "LINGSI_HOST_DEV_BMC"
++    depends on LINGSI_ESPI || LINGSI_LPC
++    help
++      TBD
++
++config LINGSI_HOST_VUART
++    tristate "LINGSI_HOST_VUART"
++    depends on LINGSI_ESPI || LINGSI_LPC
++    help
++      TBD
++
++config LINGSI_VUART_BMC
++    tristate "LINGSI_VUART_BMC"
++    depends on LINGSI_ESPI || LINGSI_LPC
++    help
++      TBD
++
++endif
+diff --git a/drivers/char/ipmi/lingsi/Makefile b/drivers/char/ipmi/lingsi/Makefile
+new file mode 100644
+index 000000000000..8f94bf855666
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/Makefile
+@@ -0,0 +1,9 @@
++# SPDX-License-Identifier: GPL-2.0
++obj-$(CONFIG_LINGSI_ESPI)          += lingsi_espi.o lingsi_espi_lpc_common.o
++obj-$(CONFIG_LINGSI_LPC)           += lingsi_lpc.o lingsi_espi_lpc_common.o
++obj-$(CONFIG_LINGSI_HOST_DEV_BMC)  += lingsi_host_dev.o
++obj-$(CONFIG_LINGSI_HOST_VUART)  += lingsi_host_vuart.o
++obj-$(CONFIG_LINGSI_VUART_BMC)     += lingsi_vuart.o
++obj-$(CONFIG_LINGSI_SIO_BMC)       += lingsi_sio.o
++obj-$(CONFIG_LINGSI_KCS_IPMI_BMC)  += lingsi_kcs.o
++obj-$(CONFIG_LINGSI_MMBI_IPMI_BMC) += lingsi_mmbi.o
+diff --git a/drivers/char/ipmi/lingsi/lingsi_espi.c b/drivers/char/ipmi/lingsi/lingsi_espi.c
+new file mode 100644
+index 000000000000..6985245d542c
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_espi.c
+@@ -0,0 +1,504 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/of.h>
++#include <linux/io.h>
++#include <linux/platform_device.h>
++#include <linux/irq.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/syscon.h>
++#include <linux/atomic.h>
++#include <linux/list.h>
++#include <linux/stdarg.h>
++#include "lingsi_espi_lpc_common.h"
++#define DEVICE_NAME "lingsi-espi"
++
++#define ESPI_DEV_ID                        0x004
++#define ESPI_GEN_CFG                       0x008
++#define ESPI_CRC_EN                        BIT(31)
++#define ESPI_RSP_MOD_EN                    BIT(30)
++#define ESPI_ALERT_MODE                    BIT(28)
++#define ESPI_IO_MODE_MASK                  GENMASK(27, 26)
++#define ESPI_IO_MODE_SHIFT                 26
++#define ESPI_IO_MODE_SUPP_MASK             GENMASK(25, 24)
++#define ESPI_IO_MODE_SUPP_SHIFT            24
++#define ESPI_OD_ALERT                      BIT(23)
++#define ESPI_OP_FREQ_MASK                  GENMASK(22, 20)
++#define ESPI_OP_FREQ_SHIFT                 20
++#define ESPI_OD_ALERT_SUPP                 BIT(19)
++#define ESPI_OP_FREQ_SUPP_MASK             GENMASK(18, 16)
++#define ESPI_OP_FREQ_SUPP_SHIFT            16
++#define ESPI_MAX_WAIT_MASK                 GENMASK(15, 12)
++#define ESPI_MAX_WAIT_SHIFT                12
++#define ESPI_CH_SUPP_MASK                  GENMASK(7, 0)
++#define ESPI_CH_SUPP_SHIFT                 0
++#define ESPI_CH0_CFG                       0x010
++#define ESPI_PER_MAX_RD_REQ_MASK           GENMASK(14, 12)
++#define ESPI_PER_MAX_RD_REQ_SHIFT          12
++#define ESPI_PER_MAX_PLOAD_MASK            GENMASK(10, 8)
++#define ESPI_PER_MAX_PLOAD_SHIFT           8
++#define ESPI_PER_MAX_PLOAD_SUPP_MASK       GENMASK(6, 4)
++#define ESPI_PER_MAX_PLOAD_SUPP_SHIFT      4
++#define ESPI_PER_BUS_MST_EN                BIT(2)
++#define ESPI_PER_CH_RDY                    BIT(1)
++#define ESPI_PER_CH_EN                     BIT(0)
++#define ESPI_CH1_CFG                       0x020
++#define ESPI_VWIR_MAX_CNT_MASK             GENMASK(21, 16)
++#define ESPI_VWIR_MAX_CNT_SHIFT            16
++#define ESPI_VWIR_MAX_CNT_SUPP_MASK        GENMASK(13, 8)
++#define ESPI_VWIR_MAX_CNT_SUPP_SHIFT       8
++#define ESPI_VWIR_CH_RDY                   BIT(1)
++#define ESPI_VWIR_CH_EN                    BIT(0)
++#define ESPI_CH2_CFG                       0x030
++#define ESPI_OOB_MAX_PLOAD_MASK            GENMASK(10, 8)
++#define ESPI_OOB_MAX_PLOAD_SHIFT           8
++#define ESPI_OOB_MAX_PLOAD_SUPP_MASK       GENMASK(6, 4)
++#define ESPI_OOB_MAX_PLOAD_SUPP_SHIFT      4
++#define ESPI_OOB_CH_RDY                    BIT(1)
++#define ESPI_OOB_CH_EN                     BIT(0)
++#define ESPI_CH3_CFG                       0x040
++#define ESPI_FLINGSI_SHARE_SUPP_MASK       GENMASK(17, 16)
++#define ESPI_FLINGSI_SHARE_SUPP_SHIFT      16
++#define ESPI_FLINGSI_MAX_RD_REQ_MASK       GENMASK(14, 12)
++#define ESPI_FLINGSI_MAX_RD_REQ_SHIFT      12
++#define ESPI_FLINGSI_SHARE_MODE            BIT(11)
++#define ESPI_FLINGSI_MAX_PLOAD_MASK        GENMASK(10, 8)
++#define ESPI_FLINGSI_MAX_PLOAD_SHIFT       8
++#define ESPI_FLINGSI_MAX_PLOAD_SUPP_MASK   GENMASK(7, 5)
++#define ESPI_FLINGSI_MAX_PLOAD_SUPP_SHIFT  5
++#define ESPI_FLINGSI_ERS_SIZ_MASK          GENMASK(4, 2)
++#define ESPI_FLINGSI_ERS_SIZ_SHIFT         2
++#define ESPI_FLINGSI_CH_RDY                BIT(1)
++#define ESPI_FLINGSI_CH_EN                 BIT(0)
++#define ESPI_CH3_CFG2                      0x044
++#define ESPI_FLINGSI_RPMC_SUPP_MASK        GENMASK(21, 16)
++#define ESPI_FLINGSI_RPMC_SUPP_SHIFT       16
++#define ESPI_FLINGSI_ERS_SIZ_MST_MASK      GENMASK(15, 8)
++#define ESPI_FLINGSI_ERS_SIZ_MST_SHIFT     8
++#define ESPI_FLINGSI_MAX_RD_REQ_SUPP_MASK  GENMASK(2, 0)
++#define ESPI_FLINGSI_MAX_RD_REQ_SUPP_SHIFT 0
++
++#define ESPI_UP_NPST_LEN_M1  0x100
++#define ESPI_UP_NPST_DAT     0x104
++#define ESPI_UP_NPST_ADR     0x108
++#define ESPI_DN_NPST_ADR     0x10c
++#define ESPI_UP_PSTC_LEN_M1  0x110
++#define ESPI_UP_PSTC_DAT     0x114
++#define ESPI_UP_PSTC_ADR     0x118
++#define ESPI_DN_PSTC_ADR     0x11c
++#define ESPI_UP_VWIR_LEN_M1  0x120
++#define ESPI_UP_VWIR_DAT     0x124
++#define ESPI_UP_VWIR_ADR     0x128
++#define ESPI_UP_OOBP_LEN_M1  0x130
++#define ESPI_UP_OOBP_DAT     0x134
++#define ESPI_UP_OOBP_ADR     0x138
++#define ESPI_DN_OOBP_ADR     0x13c
++#define ESPI_UP_FLASH_LEN_M1 0x140
++#define ESPI_UP_FLASH_DAT    0x144
++#define ESPI_UP_FLASH_ADR    0x148
++#define ESPI_DN_FLASH_ADR    0X14C
++
++#define ESPI_ICAP_CTRL             0x150
++#define ESPI_STATUS_SET            0x154
++#define ESPI_ALERT_CLEAR           BIT(17)
++#define ESPI_ALERT_SET             BIT(16)
++#define ESPI_SET_FLASH_NP_AVAIL    BIT(13)
++#define ESPI_SET_FLSH_C_AVAIL      BIT(12)
++#define ESPI_SET_FLASH_NP_FREE     BIT(9)
++#define ESPI_SET_FLASH_C_FREE      BIT(8)
++#define ESPI_SET_OOB_AVAIL         BIT(7)
++#define ESPI_SET_VWIRE_AVAIL       BIT(6)
++#define ESPI_SET_PERI_NP_AVAIL     BIT(5)
++#define ESPI_SET_PERI_PC_AVAIL     BIT(4)
++#define ESPI_SET_OOB_FREE          BIT(3)
++#define ESPI_SET_VWIRE_FREE        BIT(2)
++#define ESPI_SET_PERI_NP_FREE      BIT(1)
++#define ESPI_SET_PERI_PC_FREE      BIT(0)
++#define ESPI_DN_VWIR_IDX_CTRL0     0x160
++#define ESPI_DN_VWIR_IDX_P03_MASK  GENMASK(31, 24)
++#define ESPI_DN_VWIR_IDX_P03_SHIFT 24
++#define ESPI_DN_VWIR_IDX_P02_MASK  GENMASK(23, 16)
++#define ESPI_DN_VWIR_IDX_P02_SHIFT 16
++#define ESPI_DN_VWIR_IDX_P01_MASK  GENMASK(15, 8)
++#define ESPI_DN_VWIR_IDX_P01_SHIFT 8
++#define ESPI_DN_VWIR_IDX_P00_MASK  GENMASK(7, 0)
++#define ESPI_DN_VWIR_IDX_P00_SHIFT 0
++#define ESPI_DN_VWIR_IDX_CTRL1     0x164
++#define ESPI_DN_VWIR_IDX_P07_MASK  GENMASK(31, 24)
++#define ESPI_DN_VWIR_IDX_P07_SHIFT 24
++#define ESPI_DN_VWIR_IDX_P06_MASK  GENMASK(23, 16)
++#define ESPI_DN_VWIR_IDX_P06_SHIFT 16
++#define ESPI_DN_VWIR_IDX_P05_MASK  GENMASK(15, 8)
++#define ESPI_DN_VWIR_IDX_P05_SHIFT 8
++#define ESPI_DN_VWIR_IDX_P04_MASK  GENMASK(7, 0)
++#define ESPI_DN_VWIR_IDX_P04_SHIFT 0
++#define ESPI_DN_VWIR_VAL0          0x180
++#define ESPI_DN_VWIR_VAL_P03_MASK  GENMASK(27, 24)
++#define ESPI_DN_VWIR_VAL_P03_SHIFT 24
++#define ESPI_DN_VWIR_VAL_P02_MASK  GENMASK(19, 16)
++#define ESPI_DN_VWIR_VAL_P02_SHIFT 16
++#define ESPI_DN_VWIR_VAL_P01_MASK  GENMASK(11, 8)
++#define ESPI_DN_VWIR_VAL_P01_SHIFT 8
++#define ESPI_DN_VWIR_VAL_P00_MASK  GENMASK(3, 0)
++#define ESPI_DN_VWIR_VAL_P00_SHIFT 0
++#define ESPI_DN_VWIR_VAL1          0x184
++#define ESPI_DN_VWIR_VAL_P07_MASK  GENMASK(27, 24)
++#define ESPI_DN_VWIR_VAL_P07_SHIFT 24
++#define ESPI_DN_VWIR_VAL_P06_MASK  GENMASK(19, 16)
++#define ESPI_DN_VWIR_VAL_P06_SHIFT 16
++#define ESPI_DN_VWIR_VAL_P05_MASK  GENMASK(11, 8)
++#define ESPI_DN_VWIR_VAL_P05_SHIFT 8
++#define ESPI_DN_VWIR_VAL_P04_MASK  GENMASK(3, 0)
++#define ESPI_DN_VWIR_VAL_P04_SHIFT 0
++#define ESPI_DN_VWIR_SYS0          0x1a0
++#define ESPI_DN_VWIR_VAL_S03_MASK  GENMASK(27, 24)
++#define ESPI_DN_VWIR_VAL_S03_SHIFT 24
++#define ESPI_DN_VWIR_VAL_S02_MASK  GENMASK(19, 16)
++#define ESPI_DN_VWIR_VAL_S02_SHIFT 16
++#define ESPI_DN_VWIR_SYS1          0x1a4
++#define ESPI_DN_VWIR_VAL_S07_MASK  GENMASK(27, 24)
++#define ESPI_DN_VWIR_VAL_S07_SHIFT 24
++
++#define ESPI_INT_MASK        0x200
++#define ESPI_INT_CLR         0x204
++#define ESPI_INT_STT         0x208
++#define ESPI_INT_RAW         0x20c
++#define ESPI_INT_DN_RESET    BIT(26)
++#define ESPI_INT_DN_VWIR_P07 BIT(25)
++#define ESPI_INT_DN_VWIR_P06 BIT(24)
++#define ESPI_INT_DN_VWIR_P05 BIT(23)
++#define ESPI_INT_DN_VWIR_P04 BIT(22)
++#define ESPI_INT_DN_VWIR_P03 BIT(21)
++#define ESPI_INT_DN_VWIR_P02 BIT(20)
++#define ESPI_INT_DN_VWIR_P01 BIT(19)
++#define ESPI_INT_DN_VWIR_P00 BIT(18)
++#define ESPI_INT_DN_VWIR_S07 BIT(17)
++#define ESPI_INT_DN_VWIR_S03 BIT(16)
++#define ESPI_INT_DN_VWIR_S02 BIT(15)
++#define ESPI_INT_DN_CFG      BIT(14)
++#define ESPI_INT_UP_FIFO_UDR BIT(13)
++#define ESPI_INT_DN_FIFO_OVR BIT(12)
++#define ESPI_INT_FLSN_AVAIL  BIT(11)
++#define ESPI_INT_FLSC_AVAIL  BIT(10)
++#define ESPI_INT_FLSN_FREE   BIT(9)
++#define ESPI_INT_FLSC_FREE   BIT(8)
++#define ESPI_INT_OOB_AVAIL   BIT(7)
++#define ESPI_INT_VWIR_AVAIL  BIT(6)
++#define ESPI_INT_NPST_AVAIL  BIT(5)
++#define ESPI_INT_PSTC_AVAIL  BIT(4)
++#define ESPI_INT_OOB_FREE    BIT(3)
++#define ESPI_INT_VWIR_FREE   BIT(2)
++#define ESPI_INT_NPST_FREE   BIT(1)
++#define ESPI_INT_PSTC_FREE   BIT(0)
++#define ESPI_STATUS          0x210
++#define ESPI_STATUS_SENT     0x214
++
++#define ESPI_SYS_EVT_2_SLP_S5_N BIT(2)
++#define ESPI_SYS_EVT_2_SLP_S4_N BIT(1)
++#define ESPI_SYS_EVT_2_SLP_S3_N BIT(0)
++
++#define ESPI_SYS_EVT_3_OOB_RST_WARN BIT(2)
++#define ESPI_SYS_EVT_3_PLTRST_N     BIT(1)
++#define ESPI_SYS_EVT_3_SUS_STAT_N   BIT(0)
++
++#define ESPI_SYS_EVT_4_PME_N_VLD       BIT(7)
++#define ESPI_SYS_EVT_4_WAKE_N_VLD      BIT(6)
++#define ESPI_SYS_EVT_4_OOB_RST_ACK_VLD BIT(4)
++#define ESPI_SYS_EVT_4_PME_N           BIT(3)
++#define ESPI_SYS_EVT_4_WAKE_N          BIT(2)
++#define ESPI_SYS_EVT_4_OOB_RST_ACK     BIT(0)
++
++#define ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_STATUS_VLD BIT(7)
++#define ESPI_SYS_EVT_5_ERROR_NONFATAL_VLD         BIT(6)
++#define ESPI_SYS_EVT_5_ERROR_FATAL_VLD            BIT(5)
++#define ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE_VLD   BIT(4)
++#define ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_STATUS     BIT(3)
++#define ESPI_SYS_EVT_5_ERROR_NONFATAL             BIT(2)
++#define ESPI_SYS_EVT_5_ERROR_FATAL                BIT(1)
++#define ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE       BIT(0)
++
++#define ESPI_SYS_EVT_6_HOST_RST_ACK_VLD BIT(7)
++#define ESPI_SYS_EVT_6_RCIN_N_VLD       BIT(6)
++#define ESPI_SYS_EVT_6_SMI_N_VLD        BIT(5)
++#define ESPI_SYS_EVT_6_SCI_N_VLD        BIT(4)
++#define ESPI_SYS_EVT_6_HOST_RST_ACK     BIT(3)
++#define ESPI_SYS_EVT_6_RCIN_N           BIT(2)
++#define ESPI_SYS_EVT_6_SMI_N            BIT(1)
++#define ESPI_SYS_EVT_6_SCI_N            BIT(0)
++
++#define ESPI_SYS_EVT_7_NMIOUT_N      BIT(2)
++#define ESPI_SYS_EVT_7_SMIOUT_N      BIT(1)
++#define ESPI_SYS_EVT_7_HOST_RST_WARN BIT(0)
++
++#define ESPI_NP_RX_BUF_OFFSET 0x800
++#define ESPI_PC_RX_BUF_OFFSET 0x900
++#define ESPI_PC_TX_BUF_OFFSET 0xa00
++#define ESPI_VW_TX_BUF_OFFSET 0xb00
++
++static inline u8 *np_rx_buf_get(void __iomem *base)
++{
++    return base + ESPI_NP_RX_BUF_OFFSET;
++}
++
++static inline u8 *pc_rx_buf_get(void __iomem *base)
++{
++    return base + ESPI_PC_RX_BUF_OFFSET;
++}
++
++static inline u8 *pc_tx_buf_get(void __iomem *base)
++{
++    return base + ESPI_PC_TX_BUF_OFFSET;
++}
++
++static inline u8 *vw_tx_buf_get(void __iomem *base)
++{
++    return base + ESPI_VW_TX_BUF_OFFSET;
++}
++
++static void espi_vw_tx(struct lingsi_espi_lpc_struct *espi, u8 count, u8 idx, u8 val, ...)
++{
++    unsigned long flags;
++    va_list vargs;
++    u32 espi_stat;
++    u32 vw_first_word = val << 16 | idx << 8 | (count - 1);
++    u8 *vw_tx = vw_tx_buf_get(espi->base);
++    spin_lock_irqsave(&espi->u.espi.vw_tx_lock, flags);
++    do {
++        espi_stat = ioread32(espi->base + ESPI_STATUS);
++    } while (espi_stat & ESPI_SET_VWIRE_AVAIL);
++    iowrite32(count * 2, espi->base + ESPI_UP_VWIR_LEN_M1);
++    count--;
++    va_start(vargs, val);
++    if (count > 0) {
++        idx = va_arg(vargs, unsigned);
++        val = va_arg(vargs, unsigned);
++        vw_first_word |= idx << 24;
++        *vw_tx++ = val;
++        count--;
++    }
++    while (count--) {
++        idx = va_arg(vargs, unsigned);
++        val = va_arg(vargs, unsigned);
++        *vw_tx++ = idx;
++        *vw_tx++ = val;
++    }
++    va_end(vargs);
++    iowrite32(vw_first_word, espi->base + ESPI_UP_VWIR_DAT);
++    iowrite32(ESPI_ALERT_SET | ESPI_SET_VWIRE_AVAIL, espi->base + ESPI_STATUS_SET);
++    spin_unlock_irqrestore(&espi->u.espi.vw_tx_lock, flags);
++}
++
++static void espi_send_boot_done(struct lingsi_espi_lpc_struct *espi)
++{
++    espi_vw_tx(espi, 1, 5, ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE_VLD | ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE | ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_STATUS_VLD | ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_STATUS);
++}
++
++static void espi_send_oob_rst_ack(struct lingsi_espi_lpc_struct *espi)
++{
++    espi_vw_tx(espi, 1, 4, ESPI_SYS_EVT_4_OOB_RST_ACK_VLD | ESPI_SYS_EVT_4_OOB_RST_ACK);
++}
++
++static void espi_send_host_rst_ack(struct lingsi_espi_lpc_struct *espi)
++{
++    espi_vw_tx(espi, 1, 6, ESPI_SYS_EVT_6_HOST_RST_ACK_VLD | ESPI_SYS_EVT_6_HOST_RST_ACK);
++}
++
++static void espi_send_edge_int_evt(struct lingsi_espi_lpc_struct *espi, u8 idx)
++{
++    espi_vw_tx(espi, 2, idx & 0x80 ? 1 : 0, 1 << 7 | (idx & 0x7f), idx & 0x80 ? 1 : 0, idx & 0x7f);
++}
++
++static void espi_send_level_int_evt(struct lingsi_espi_lpc_struct *espi, u8 idx, u8 active)
++{
++    espi_vw_tx(espi, 1, idx & 0x80 ? 1 : 0, active << 7 | (idx & 0x7f));
++}
++
++static void mem_io_rd_rsp_pkt_build(u8 len, u32 data, u8 *up_data_buf, u32 *up_first_word, u16 *up_len)
++{
++    *up_first_word = 0x0f | len << 16 | (data & 0xff) << 24;
++    *up_len = 3 + len;
++    up_data_buf[0] = data >> 8;
++    up_data_buf[1] = data >> 16;
++    up_data_buf[2] = data >> 24;
++}
++
++static irqreturn_t lingsi_espi_irq(int irq, void *arg)
++{
++    struct lingsi_espi_lpc_struct *espi = arg;
++    unsigned int_stt = ioread32(espi->base + ESPI_INT_STT);
++    if (int_stt & ESPI_INT_NPST_FREE) {
++        u8 *rx = np_rx_buf_get(espi->base);
++        u8 opcode = rx[0];
++        iowrite32(ESPI_INT_NPST_FREE, espi->base + ESPI_INT_CLR);
++        if ((opcode & ~0xf) == 0x40) {
++            u32 up_first_word = 0;
++            u16 up_len = 1;
++            u8 len = (opcode & 0x3) + 1;
++            u8 *up_data_remain = pc_tx_buf_get(espi->base);
++            u32 res;
++            if (opcode & 0x8) //PUT_MEMRD32_SHORT
++            {
++                u32 addr = rx[1] << 24 | rx[2] << 16 | rx[3] << 8 | rx[4];
++                BUG_ON(opcode & 0x4);
++                memrd_short(espi, len, addr, &res);
++                mem_io_rd_rsp_pkt_build(len, res, up_data_remain, &up_first_word, &up_len);
++            } else {
++                u16 addr = rx[1] << 8 | rx[2];
++                if (opcode & 0x4) //PUT_IOWR_SHORT
++                {
++                    iowr_short(espi, len, addr, &rx[3]);
++                    up_first_word = 6;
++                    up_len = 3;
++                } else //PUT_IORD_SHORT
++                {
++                    iord_short(espi, len, addr, &res);
++                    mem_io_rd_rsp_pkt_build(len, res, up_data_remain, &up_first_word, &up_len);
++                }
++            }
++            iowrite32(up_first_word, espi->base + ESPI_UP_PSTC_DAT);
++            iowrite32(up_len - 1, espi->base + ESPI_UP_PSTC_LEN_M1);
++        }
++        iowrite32(ESPI_ALERT_SET | ESPI_SET_PERI_PC_AVAIL | ESPI_SET_PERI_NP_FREE, espi->base + ESPI_STATUS_SET);
++    }
++    if (int_stt & ESPI_INT_PSTC_FREE) {
++        u8 *rx = pc_rx_buf_get(espi->base);
++        u8 opcode = rx[0];
++        iowrite32(ESPI_INT_PSTC_FREE, espi->base + ESPI_INT_CLR);
++        if ((opcode & ~0x3) == 0x4c) //PUT_MEMWR32_SHORT
++        {
++            u8 len = (opcode & 0x3) + 1;
++            u32 addr = rx[1] << 24 | rx[2] << 16 | rx[3] << 8 | rx[4];
++            memwr_short(espi, len, addr, &rx[5]);
++        }
++
++        iowrite32(ESPI_SET_PERI_PC_FREE, espi->base + ESPI_STATUS_SET);
++    }
++    if (int_stt & ESPI_INT_DN_VWIR_S02) {
++        u32 dn_vwir_sys0 = ioread32(espi->base + ESPI_DN_VWIR_SYS0);
++        u8 s02 = dn_vwir_sys0 >> 16 & 0xf;
++        espi->u.espi.slp_s3_n = s02 & ESPI_SYS_EVT_2_SLP_S3_N ? 1 : 0;
++        espi->u.espi.slp_s4_n = s02 & ESPI_SYS_EVT_2_SLP_S4_N ? 1 : 0;
++        espi->u.espi.slp_s5_n = s02 & ESPI_SYS_EVT_2_SLP_S5_N ? 1 : 0;
++        iowrite32(ESPI_INT_DN_VWIR_S02, espi->base + ESPI_INT_CLR);
++    }
++    if (int_stt & ESPI_INT_DN_VWIR_S03) {
++        u32 dn_vwir_sys0 = ioread32(espi->base + ESPI_DN_VWIR_SYS0);
++        u8 s03 = dn_vwir_sys0 >> 24 & 0xf;
++        if (s03 & ESPI_SYS_EVT_3_OOB_RST_WARN) {
++            espi_send_oob_rst_ack(espi);
++        }
++        espi->u.espi.pltrst_n = s03 & ESPI_SYS_EVT_3_PLTRST_N ? 1 : 0;
++        espi->u.espi.sus_stat_n = s03 & ESPI_SYS_EVT_3_SUS_STAT_N ? 1 : 0;
++        iowrite32(ESPI_INT_DN_VWIR_S03, espi->base + ESPI_INT_CLR);
++    }
++    if (int_stt & ESPI_INT_DN_VWIR_S07) {
++        u32 dn_vwir_sys1 = ioread32(espi->base + ESPI_DN_VWIR_SYS1);
++        u8 s07 = dn_vwir_sys1 >> 24 & 0xf;
++        if (s07 & ESPI_SYS_EVT_7_HOST_RST_WARN) {
++            espi_send_host_rst_ack(espi);
++        }
++        espi->u.espi.nmiout_n = s07 & ESPI_SYS_EVT_7_NMIOUT_N ? 1 : 0;
++        espi->u.espi.smiout_n = s07 & ESPI_SYS_EVT_7_SMIOUT_N ? 1 : 0;
++        iowrite32(ESPI_INT_DN_VWIR_S07, espi->base + ESPI_INT_CLR);
++    }
++    if (int_stt & ESPI_INT_DN_RESET) {
++        while (1)
++            ;
++    }
++    return IRQ_HANDLED;
++}
++
++static void espi_reg_init(void __iomem *base)
++{
++    iowrite32(0x0 << ESPI_IO_MODE_SUPP_SHIFT | 0 << ESPI_OP_FREQ_SUPP_SHIFT | 0xf << ESPI_CH_SUPP_SHIFT, base + ESPI_GEN_CFG);
++    iowrite32(0x1 << ESPI_PER_MAX_PLOAD_SUPP_SHIFT | ESPI_PER_CH_RDY, base + ESPI_CH0_CFG);
++    iowrite32(0x1f << ESPI_VWIR_MAX_CNT_SUPP_SHIFT | ESPI_VWIR_CH_RDY, base + ESPI_CH1_CFG);
++    iowrite32(0x1 << ESPI_OOB_MAX_PLOAD_SUPP_SHIFT | ESPI_OOB_CH_RDY, base + ESPI_CH2_CFG);
++    iowrite32(0x3 << ESPI_FLINGSI_SHARE_SUPP_SHIFT | 0x1 << ESPI_FLINGSI_MAX_PLOAD_SUPP_SHIFT | ESPI_FLINGSI_CH_RDY, base + ESPI_CH3_CFG);
++
++    iowrite32(ESPI_ALERT_CLEAR | ESPI_SET_VWIRE_FREE | ESPI_SET_OOB_FREE
++                  | ESPI_SET_PERI_NP_FREE | ESPI_SET_PERI_PC_FREE
++                  | ESPI_SET_FLASH_C_FREE | ESPI_SET_FLASH_NP_FREE,
++              base + ESPI_STATUS_SET);
++    iowrite32(ESPI_NP_RX_BUF_OFFSET, base + ESPI_DN_NPST_ADR);
++    iowrite32(ESPI_PC_RX_BUF_OFFSET, base + ESPI_DN_PSTC_ADR);
++    iowrite32(ESPI_PC_TX_BUF_OFFSET, base + ESPI_UP_PSTC_ADR);
++    iowrite32(ESPI_VW_TX_BUF_OFFSET, base + ESPI_UP_VWIR_ADR);
++    iowrite32(ESPI_INT_DN_RESET | ESPI_INT_PSTC_FREE | ESPI_INT_NPST_FREE | ESPI_INT_DN_VWIR_S02 | ESPI_INT_DN_VWIR_S03 | ESPI_INT_DN_VWIR_S07, base + ESPI_INT_CLR);
++    iowrite32(ESPI_INT_DN_RESET | ESPI_INT_PSTC_FREE | ESPI_INT_NPST_FREE | ESPI_INT_DN_VWIR_S02 | ESPI_INT_DN_VWIR_S03 | ESPI_INT_DN_VWIR_S07, base + ESPI_INT_MASK);
++}
++
++static int lingsi_espi_probe(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    struct lingsi_espi_lpc_struct *priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++    struct resource *res;
++    int irq, rc;
++    if (!priv)
++        return -ENOMEM;
++
++    priv->u.espi.slp_s3_n = 1;
++    priv->u.espi.slp_s4_n = 1;
++    priv->u.espi.slp_s5_n = 1;
++    priv->u.espi.pltrst_n = 1;
++    priv->u.espi.sus_stat_n = 1;
++    priv->u.espi.nmiout_n = 1;
++    priv->u.espi.smiout_n = 1;
++    priv->raise_edge_irq = espi_send_edge_int_evt;
++    priv->set_level_irq = espi_send_level_int_evt;
++
++    res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++    if (!res) {
++        dev_err(dev, "cannot get resource\n");
++        return -ENODEV;
++    }
++    priv->base = devm_ioremap_resource(dev, res);
++    if (IS_ERR(priv->base)) {
++        dev_err(dev, "cannot map registers\n");
++        return PTR_ERR(priv->base);
++    }
++    irq = platform_get_irq(pdev, 0);
++    if (irq < 0) {
++        dev_err(dev, "cannot get irq\n");
++        return irq;
++    }
++    rc = devm_request_irq(dev, irq, lingsi_espi_irq, IRQF_SHARED, dev_name(dev), priv);
++    if (rc < 0) {
++        dev_err(dev, "cannot request irq\n");
++        return rc;
++    }
++
++    INIT_LIST_HEAD(&priv->peri_io_list);
++    INIT_LIST_HEAD(&priv->peri_mem_list);
++
++    spin_lock_init(&priv->u.espi.vw_tx_lock);
++    platform_set_drvdata(pdev, priv);
++
++    espi_reg_init(priv->base);
++    espi_send_boot_done(priv);
++
++    return 0;
++}
++
++static int lingsi_espi_remove(struct platform_device *pdev)
++{
++    return 0;
++}
++
++static const struct of_device_id lingsi_espi_match[] = {
++    { .compatible = "lingsi,espi" },
++    {}
++};
++MODULE_DEVICE_TABLE(of, lingsi_espi_match);
++
++static struct platform_driver lingsi_espi_driver = {
++    .driver = {
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_espi_match,
++    },
++    .probe = lingsi_espi_probe,
++    .remove = lingsi_espi_remove,
++};
++module_platform_driver(lingsi_espi_driver);
++
++MODULE_LICENSE("GPL");
+diff --git a/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c b/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c
+new file mode 100644
+index 000000000000..638298d27d2c
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c
+@@ -0,0 +1,106 @@
++#include <linux/module.h>
++#include <linux/init.h>
++#include "lingsi_espi_lpc_common.h"
++
++void espi_lpc_add_ioport(struct lingsi_espi_lpc_struct *peri, struct lingsi_peri_ioport *ioport, void (*io_read)(struct lingsi_peri_ioport *, u8, void *), void (*io_write)(struct lingsi_peri_ioport *, u8, u8 *), u16 addr, void *ctx)
++{
++    ioport->io_read = io_read;
++    ioport->io_write = io_write;
++    ioport->addr = addr;
++    ioport->ctx = ctx;
++    list_add(&ioport->head, &peri->peri_io_list);
++}
++EXPORT_SYMBOL(espi_lpc_add_ioport);
++
++void espi_lpc_remove_ioport(struct lingsi_peri_ioport *ioport)
++{
++    list_del(&ioport->head);
++}
++EXPORT_SYMBOL(espi_lpc_remove_ioport);
++
++void espi_lpc_add_mem(struct lingsi_espi_lpc_struct *peri, struct lingsi_peri_mem *mem, bool (*mem_read)(struct lingsi_peri_mem *, u32, u8, void *), bool (*mem_write)(struct lingsi_peri_mem *, u32, u8, u8 *), void *ctx)
++{
++    mem->mem_read = mem_read;
++    mem->mem_write = mem_write;
++    mem->ctx = ctx;
++    list_add(&mem->head, &peri->peri_mem_list);
++}
++EXPORT_SYMBOL(espi_lpc_add_mem);
++
++void espi_lpc_remove_mem(struct lingsi_peri_mem *mem)
++{
++    list_del(&mem->head);
++}
++EXPORT_SYMBOL(espi_lpc_remove_mem);
++
++void espi_lpc_raise_edge_irq(struct lingsi_espi_lpc_struct *espi, u8 idx)
++{
++    espi->raise_edge_irq(espi, idx);
++}
++EXPORT_SYMBOL(espi_lpc_raise_edge_irq);
++
++void espi_lpc_set_level_irq(struct lingsi_espi_lpc_struct *espi, u8 idx, u8 active)
++{
++    espi->set_level_irq(espi, idx, active);
++}
++EXPORT_SYMBOL(espi_lpc_set_level_irq);
++
++bool iord_short(struct lingsi_espi_lpc_struct *espi, u8 size, u16 addr, void *res)
++{
++    struct list_head *ptr;
++    list_for_each(ptr, &espi->peri_io_list)
++    {
++        struct lingsi_peri_ioport *io = list_entry(ptr, struct lingsi_peri_ioport, head);
++        if (addr == io->addr) {
++            io->io_read(io, size, res);
++            return true;
++        }
++    }
++    return false;
++}
++EXPORT_SYMBOL(iord_short);
++
++bool iowr_short(struct lingsi_espi_lpc_struct *espi, u8 size, u16 addr, u8 *data)
++{
++    struct list_head *ptr;
++    list_for_each(ptr, &espi->peri_io_list)
++    {
++        struct lingsi_peri_ioport *io = list_entry(ptr, struct lingsi_peri_ioport, head);
++        if (addr == io->addr) {
++            io->io_write(io, size, data);
++            return true;
++        }
++    }
++    return false;
++}
++EXPORT_SYMBOL(iowr_short);
++
++bool memwr_short(struct lingsi_espi_lpc_struct *espi, u8 size, u32 addr, u8 *data)
++{
++    struct list_head *ptr;
++    list_for_each(ptr, &espi->peri_mem_list)
++    {
++        struct lingsi_peri_mem *mem = list_entry(ptr, struct lingsi_peri_mem, head);
++        if (mem->mem_write(mem, addr, size, data)) {
++            return true;
++        }
++    }
++    return false;
++}
++EXPORT_SYMBOL(memwr_short);
++
++bool memrd_short(struct lingsi_espi_lpc_struct *espi, u8 size, u32 addr, void *res)
++{
++    struct list_head *ptr;
++    list_for_each(ptr, &espi->peri_mem_list)
++    {
++        struct lingsi_peri_mem *mem = list_entry(ptr, struct lingsi_peri_mem, head);
++        if (mem->mem_read(mem, addr, size, res)) {
++            return true;
++        }
++    }
++    return false;
++}
++EXPORT_SYMBOL(memrd_short);
++
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.h b/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.h
+new file mode 100644
+index 000000000000..d88135d6bf2b
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.h
+@@ -0,0 +1,67 @@
++#ifndef LINGSI_ESPI_LPC_COMMON_H
++#define LINGSI_ESPI_LPC_COMMON_H
++#include <linux/list.h>
++#include <linux/io.h>
++#include <linux/atomic.h>
++struct lingsi_peri_ioport {
++    struct list_head head;
++    void (*io_read)(struct lingsi_peri_ioport *ioport, u8 size, void *res);
++    void (*io_write)(struct lingsi_peri_ioport *ioport, u8 size, u8 *data);
++    void *ctx;
++    u16 addr;
++};
++
++struct lingsi_peri_mem {
++    struct list_head head;
++    bool (*mem_read)(struct lingsi_peri_mem *mem, u32 addr, u8 size, void *res);
++    bool (*mem_write)(struct lingsi_peri_mem *mem, u32 addr, u8 size, u8 *data);
++    void *ctx;
++};
++
++struct lingsi_upstream_irq {
++    u32 id;
++    u32 type;
++};
++
++struct lingsi_host_reg {
++    u32 base;
++    u32 range;
++};
++
++struct lingsi_espi_lpc_struct {
++    void __iomem *base;
++    struct list_head peri_io_list;
++    struct list_head peri_mem_list;
++    void (*raise_edge_irq)(struct lingsi_espi_lpc_struct *, u8);
++    void (*set_level_irq)(struct lingsi_espi_lpc_struct *, u8, u8);
++    union {
++        struct {
++            spinlock_t vw_tx_lock;
++            u8 slp_s3_n : 1,
++                slp_s4_n : 1,
++                slp_s5_n : 1,
++                pltrst_n : 1,
++                sus_stat_n : 1,
++                nmiout_n : 1,
++                smiout_n : 1;
++        } espi;
++        struct {
++            spinlock_t serirq_src_lock;
++            spinlock_t int_msk_lock;
++            u32 serirq_edge_mask;
++        } lpc;
++    } u;
++};
++
++bool iord_short(struct lingsi_espi_lpc_struct *espi, u8 size, u16 addr, void *res);
++bool iowr_short(struct lingsi_espi_lpc_struct *espi, u8 size, u16 addr, u8 *data);
++bool memwr_short(struct lingsi_espi_lpc_struct *espi, u8 size, u32 addr, u8 *data);
++bool memrd_short(struct lingsi_espi_lpc_struct *espi, u8 size, u32 addr, void *res);
++void espi_lpc_raise_edge_irq(struct lingsi_espi_lpc_struct *espi, u8 idx);
++void espi_lpc_set_level_irq(struct lingsi_espi_lpc_struct *espi, u8 idx, u8 active);
++void espi_lpc_add_ioport(struct lingsi_espi_lpc_struct *peri, struct lingsi_peri_ioport *ioport, void (*io_read)(struct lingsi_peri_ioport *, u8, void *), void (*io_write)(struct lingsi_peri_ioport *, u8, u8 *), u16 addr, void *ctx);
++void espi_lpc_remove_ioport(struct lingsi_peri_ioport *ioport);
++void espi_lpc_add_mem(struct lingsi_espi_lpc_struct *peri, struct lingsi_peri_mem *mem, bool (*mem_read)(struct lingsi_peri_mem *, u32, u8, void *), bool (*mem_write)(struct lingsi_peri_mem *, u32, u8, u8 *), void *ctx);
++void espi_lpc_remove_mem(struct lingsi_peri_mem *mem);
++
++#endif
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_host_dev.c b/drivers/char/ipmi/lingsi/lingsi_host_dev.c
+new file mode 100644
+index 000000000000..3a568b62a27b
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_host_dev.c
+@@ -0,0 +1,176 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/of.h>
++#include <linux/io.h>
++#include <linux/platform_device.h>
++#include <linux/irq.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/syscon.h>
++#include <linux/atomic.h>
++#include <linux/of_platform.h>
++#include <linux/workqueue.h>
++#include "lingsi_espi_lpc_common.h"
++#define DEVICE_NAME "lingsi-host-dev"
++
++struct lingsi_host_dev {
++    struct lingsi_espi_lpc_struct *parent;
++    void __iomem *base;
++    struct lingsi_upstream_irq up_irq;
++    struct lingsi_host_reg host_reg;
++    int local_irq;
++    struct lingsi_peri_ioport ioport[];
++};
++
++static irqreturn_t lingsi_host_dev_irq(int irq, void *arg)
++{
++    struct lingsi_host_dev *priv = arg;
++    disable_irq_nosync(irq);
++    if (priv->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++        espi_lpc_set_level_irq(priv->parent, priv->up_irq.id, 1);
++    } else {
++        espi_lpc_raise_edge_irq(priv->parent, priv->up_irq.id);
++    }
++    return IRQ_HANDLED;
++}
++
++static void irq_state_update(struct lingsi_host_dev *priv)
++{
++    bool masked, pending;
++    int ret = irq_get_irqchip_state(priv->local_irq, IRQCHIP_STATE_MASKED, &masked);
++    BUG_ON(ret);
++    if (!masked) {
++        return;
++    }
++    ret = irq_set_irqchip_state(priv->local_irq, IRQCHIP_STATE_PENDING, false);
++    BUG_ON(ret);
++    ret = irq_get_irqchip_state(priv->local_irq, IRQCHIP_STATE_PENDING, &pending);
++    BUG_ON(ret);
++    if (!pending) {
++        if (priv->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++            espi_lpc_set_level_irq(priv->parent, priv->up_irq.id, 0);
++        }
++        enable_irq(priv->local_irq);
++    }
++}
++
++static void host_reg_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_dev *priv = ioport->ctx;
++    u8 *val = res;
++    u8 offset = ioport->addr - priv->host_reg.base;
++    *val = ioread32(priv->base + sizeof(int) * offset);
++    irq_state_update(priv);
++}
++
++static void host_reg_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_dev *priv = ioport->ctx;
++    u8 offset = ioport->addr - priv->host_reg.base;
++    iowrite32(*data, priv->base + sizeof(int) * offset);
++    irq_state_update(priv);
++}
++
++static int lingsi_host_dev_probe(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    struct platform_device *parent_pdev;
++    struct lingsi_espi_lpc_struct *espi_lpc;
++    struct lingsi_host_dev *priv;
++    struct device_node *parent = of_get_parent(dev->of_node);
++    struct resource *res;
++    struct lingsi_host_reg host_reg;
++    int rc, i;
++    if (!parent) {
++        dev_err(dev, "cannot get parent node\n");
++        return -ENODEV;
++    }
++    parent_pdev = of_find_device_by_node(parent);
++    if (!parent_pdev) {
++        dev_err(dev, "cannot get parent device\n");
++        return -ENODEV;
++    }
++    espi_lpc = platform_get_drvdata(parent_pdev);
++    if (!espi_lpc) {
++        dev_err(dev, "espi lpc not inited\n");
++        return -EPROBE_DEFER;
++    }
++
++    rc = of_property_read_u32_array(pdev->dev.of_node, "host_reg", (u32 *)&host_reg, 2);
++    if (rc < 0) {
++        dev_err(dev, "no valid 'host_reg' configured\n");
++        return rc;
++    }
++
++    priv = devm_kzalloc(&pdev->dev, sizeof(*priv) + host_reg.range * sizeof(*priv->ioport), GFP_KERNEL);
++    if (!priv) {
++        dev_err(dev, "cannot alloc lingsi_host_dev mem\n");
++        return -ENOMEM;
++    }
++    priv->parent = espi_lpc;
++    priv->host_reg = host_reg;
++
++    rc = of_property_read_u32_array(pdev->dev.of_node, "upstream_irq", (u32 *)&priv->up_irq, 2);
++    if (rc < 0) {
++        dev_err(dev, "no valid 'upstream_irq' configured\n");
++        return rc;
++    }
++
++    res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++    if (!res) {
++        dev_err(dev, "cannot get resource\n");
++        return -ENODEV;
++    }
++    priv->base = devm_ioremap_resource(dev, res);
++    if (IS_ERR(priv->base)) {
++        dev_err(dev, "cannot map registers\n");
++        return PTR_ERR(priv->base);
++    }
++    priv->local_irq = platform_get_irq(pdev, 0);
++    if (priv->local_irq < 0) {
++        dev_err(dev, "cannot get irq\n");
++        return priv->local_irq;
++    }
++
++    for (i = 0; i < priv->host_reg.range; ++i) {
++        espi_lpc_add_ioport(espi_lpc, &priv->ioport[i], host_reg_read, host_reg_write, priv->host_reg.base + i, priv);
++    }
++
++    rc = devm_request_irq(dev, priv->local_irq, lingsi_host_dev_irq, IRQF_SHARED, dev_name(dev), priv);
++    if (rc < 0) {
++        dev_err(dev, "cannot request irq\n");
++        return rc;
++    }
++
++    platform_set_drvdata(pdev, priv);
++
++    return 0;
++}
++
++static int lingsi_host_dev_remove(struct platform_device *pdev)
++{
++    int i;
++    struct lingsi_host_dev *priv = platform_get_drvdata(pdev);
++    for (i = 0; i < priv->host_reg.range; ++i) {
++        espi_lpc_remove_ioport(&priv->ioport[i]);
++    }
++    return 0;
++}
++
++static const struct of_device_id lingsi_host_dev_match[] = {
++    { .compatible = "lingsi,host-dev" },
++    {}
++};
++MODULE_DEVICE_TABLE(of, lingsi_host_dev_match);
++
++static struct platform_driver lingsi_host_dev_driver = {
++    .driver = {
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_host_dev_match,
++    },
++    .probe = lingsi_host_dev_probe,
++    .remove = lingsi_host_dev_remove,
++};
++module_platform_driver(lingsi_host_dev_driver);
++
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_host_vuart.c b/drivers/char/ipmi/lingsi/lingsi_host_vuart.c
+new file mode 100644
+index 000000000000..3ba390eb7883
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_host_vuart.c
+@@ -0,0 +1,294 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/of.h>
++#include <linux/io.h>
++#include <linux/platform_device.h>
++#include <linux/atomic.h>
++#include <linux/of_platform.h>
++#include <linux/serial.h>
++#include <linux/serial_core.h>
++#include "lingsi_espi_lpc_common.h"
++#include "lingsi_vuart.h"
++#define DEVICE_NAME "lingsi-host-vuart"
++struct host_vuart_reg {
++    uint8_t dll;
++    uint8_t dlh;
++    uint8_t ier;
++    uint8_t fcr;
++    uint8_t lcr;
++    uint8_t mcr;
++    uint8_t scr;
++};
++
++struct lingsi_host_vuart {
++    struct lingsi_espi_lpc_struct *parent;
++    struct lingsi_vuart uartp;
++    struct lingsi_upstream_irq up_irq;
++    struct lingsi_host_reg host_reg;
++    struct lingsi_peri_ioport ioport[8];
++    struct host_vuart_reg vuart_reg;
++    bool level_up_irq_active;
++    bool local_enabled;
++};
++
++static bool host_vuart_rx_available(struct lingsi_host_vuart *priv)
++{
++    return !lingsi_vuart_local_tx_empty(&priv->uartp);
++}
++
++static u8 host_vuart_reg_get_iir(struct lingsi_host_vuart *priv)
++{
++    bool tx_empty = true;
++    u8 iir;
++    iir = priv->vuart_reg.fcr & 0x1 ? 0xc0 : 0;
++    if ((priv->vuart_reg.ier & 0x1) && host_vuart_reg_get_iir(priv)) {
++        iir |= 0x4;
++    } else if ((priv->vuart_reg.ier & 0x2) & tx_empty) {
++        iir |= 0x2;
++    } else {
++        iir |= 0x1;
++    }
++    return iir;
++}
++
++static void host_vuart_report_inactive_level_up_irq(struct lingsi_host_vuart *priv)
++{
++    if ((host_vuart_reg_get_iir(priv) & 0xf) == 0x1) {
++        if (priv->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++            if (priv->level_up_irq_active) {
++                espi_lpc_set_level_irq(priv->parent, priv->up_irq.id, 0);
++                priv->level_up_irq_active = false;
++            }
++        }
++    }
++}
++
++static void host_vuart_report_active_edge_level_up_irq(struct lingsi_host_vuart *priv)
++{
++    if ((host_vuart_reg_get_iir(priv) & 0xf) == 0x1) {
++        return;
++    }
++    if (priv->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++        if (!priv->level_up_irq_active) {
++            espi_lpc_set_level_irq(priv->parent, priv->up_irq.id, 1);
++            priv->level_up_irq_active = true;
++        }
++    } else {
++        espi_lpc_raise_edge_irq(priv->parent, priv->up_irq.id);
++    }
++}
++
++static void host_vuart_reg0_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    if (priv->vuart_reg.lcr & 0x80) {
++        *val = priv->vuart_reg.dll;
++    } else if (host_vuart_reg_get_iir(priv)) {
++        *val = lingsi_vuart_get_tx_char(&priv->uartp);
++        host_vuart_report_inactive_level_up_irq(priv);
++    }
++}
++
++static void host_vuart_reg0_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    if (priv->vuart_reg.lcr & 0x80) {
++        priv->vuart_reg.dll = *data;
++    } else {
++        lingsi_vuart_char_rx_handle(&priv->uartp, *data);
++        //vuart_report_inactive_level_up_irq(priv);
++    }
++}
++
++static void host_vuart_reg1_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    if (priv->vuart_reg.lcr & 0x80) {
++        *val = priv->vuart_reg.dlh;
++    } else {
++        *val = priv->vuart_reg.ier;
++    }
++}
++
++static void host_vuart_reg1_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    if (priv->vuart_reg.lcr & 0x80) {
++        priv->vuart_reg.dlh = *data;
++    } else {
++        priv->vuart_reg.ier = *data;
++        host_vuart_report_active_edge_level_up_irq(priv);
++    }
++}
++
++static void host_vuart_reg2_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    *val = host_vuart_reg_get_iir(priv);
++}
++
++static void host_vuart_reg2_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    priv->vuart_reg.fcr = *data;
++}
++
++static void host_vuart_reg3_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    *val = priv->vuart_reg.lcr;
++}
++
++static void host_vuart_reg3_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    priv->vuart_reg.lcr = *data;
++}
++
++static void host_vuart_reg4_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    *val = priv->vuart_reg.mcr;
++}
++
++static void host_vuart_reg4_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    priv->vuart_reg.mcr = *data;
++}
++
++static void host_vuart_reg5_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    *val = 0x60;
++    if (host_vuart_rx_available(priv)) {
++        *val |= 0x1;
++    }
++}
++
++static void host_vuart_reg5_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    BUG_ON(1);
++}
++
++static void host_vuart_reg6_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    u8 *val = res;
++    *val = 0;
++}
++
++static void host_vuart_reg6_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    BUG_ON(1);
++}
++
++static void host_vuart_reg7_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    *val = priv->vuart_reg.scr;
++}
++
++static void host_vuart_reg7_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    priv->vuart_reg.scr = *data;
++}
++
++static int lingsi_host_vuart_probe(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    struct platform_device *parent_pdev;
++    struct lingsi_espi_lpc_struct *espi_lpc;
++    struct lingsi_host_vuart *priv;
++    struct device_node *parent = of_get_parent(dev->of_node);
++    int rc;
++    if (!parent) {
++        dev_err(dev, "cannot get parent node\n");
++        return -ENODEV;
++    }
++    parent_pdev = of_find_device_by_node(parent);
++    if (!parent_pdev) {
++        dev_err(dev, "cannot get parent device\n");
++        return -ENODEV;
++    }
++    espi_lpc = platform_get_drvdata(parent_pdev);
++    if (!espi_lpc) {
++        dev_err(dev, "espi lpc not inited\n");
++        return -EPROBE_DEFER;
++    }
++    priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
++    if (!priv) {
++        dev_err(dev, "cannot alloc lingsi_host_dev mem\n");
++        return -ENOMEM;
++    }
++    priv->parent = espi_lpc;
++
++    rc = of_property_read_u32_array(pdev->dev.of_node, "host_reg", (u32 *)&priv->host_reg, 2);
++    if (rc < 0) {
++        dev_err(dev, "no valid 'host_reg' configured\n");
++        return rc;
++    }
++    rc = of_property_read_u32_array(pdev->dev.of_node, "upstream_irq", (u32 *)&priv->up_irq, 2);
++    if (rc < 0) {
++        dev_err(dev, "no valid 'upstream_irq' configured\n");
++        return rc;
++    }
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[0], host_vuart_reg0_read, host_vuart_reg0_write, priv->host_reg.base, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[1], host_vuart_reg1_read, host_vuart_reg1_write, priv->host_reg.base + 1, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[2], host_vuart_reg2_read, host_vuart_reg2_write, priv->host_reg.base + 2, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[3], host_vuart_reg3_read, host_vuart_reg3_write, priv->host_reg.base + 3, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[4], host_vuart_reg4_read, host_vuart_reg4_write, priv->host_reg.base + 4, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[5], host_vuart_reg5_read, host_vuart_reg5_write, priv->host_reg.base + 5, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[6], host_vuart_reg6_read, host_vuart_reg6_write, priv->host_reg.base + 6, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[7], host_vuart_reg7_read, host_vuart_reg7_write, priv->host_reg.base + 7, priv);
++
++    pdev->id = of_alias_get_id(pdev->dev.of_node, "vuart");
++    if (pdev->id < 0) {
++        dev_err(&pdev->dev, "id %d out of range\n", pdev->id);
++        return -EINVAL;
++    }
++    rc = lingsi_vuart_port_add(&priv->uartp, dev, pdev->id);
++    if (rc) {
++        dev_err(dev, "lingsi_vuart_port_init() failed; err=%i\n", rc);
++        return rc;
++    }
++    platform_set_drvdata(pdev, priv);
++    return 0;
++}
++
++static int lingsi_host_vuart_remove(struct platform_device *pdev)
++{
++    int i;
++    struct lingsi_host_vuart *priv = platform_get_drvdata(pdev);
++    lingsi_vuart_port_remove(&priv->uartp);
++    for (i = 0; i < 8; ++i) {
++        espi_lpc_remove_ioport(&priv->ioport[i]);
++    }
++    return 0;
++}
++
++static const struct of_device_id lingsi_host_vuart_match[] = {
++    { .compatible = "lingsi,host-vuart" },
++    {}
++};
++MODULE_DEVICE_TABLE(of, lingsi_host_vuart_match);
++
++static struct platform_driver lingsi_host_vuart_driver = {
++    .driver = {
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_host_vuart_match,
++    },
++    .probe = lingsi_host_vuart_probe,
++    .remove = lingsi_host_vuart_remove,
++};
++module_platform_driver(lingsi_host_vuart_driver);
++
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_kcs.c b/drivers/char/ipmi/lingsi/lingsi_kcs.c
+new file mode 100644
+index 000000000000..b5074dd55fe5
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_kcs.c
+@@ -0,0 +1,304 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/of.h>
++#include <linux/io.h>
++#include <linux/platform_device.h>
++#include <linux/irq.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/syscon.h>
++#include <linux/atomic.h>
++#include <linux/of_platform.h>
++#include "../kcs_bmc_device.h"
++#include "lingsi_espi_lpc_common.h"
++#define DEVICE_NAME "lingsi-kcs-bmc"
++
++#define IDR 0x10
++#define ODR 0x14
++#define STR 0x18
++
++struct kcs_regs {
++    spinlock_t lock;
++    uint8_t status;
++    uint8_t data_out;
++    uint8_t data_in;
++};
++
++struct lingsi_kcs_bmc {
++    struct kcs_bmc_device kcs_bmc;
++    struct lingsi_espi_lpc_struct *parent;
++    struct lingsi_peri_ioport io_data;
++    struct lingsi_peri_ioport io_cmd_stt;
++    struct lingsi_upstream_irq up_irq;
++    struct kcs_regs reg;
++    u8 event_mask;
++};
++
++static inline struct lingsi_kcs_bmc *to_lingsi_kcs_bmc(struct kcs_bmc_device *kcs_bmc)
++{
++    return container_of(kcs_bmc, struct lingsi_kcs_bmc, kcs_bmc);
++}
++
++static u8 lingsi_kcs_inb(struct kcs_bmc_device *kcs_bmc, u32 reg)
++{
++    struct lingsi_kcs_bmc *lingsi_kcs = to_lingsi_kcs_bmc(kcs_bmc);
++    unsigned long flags;
++    u8 ret = 0;
++    if (reg == IDR) {
++        spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
++        lingsi_kcs->reg.status &= ~KCS_BMC_STR_IBF;
++        ret = lingsi_kcs->reg.data_in;
++        spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
++    } else if (reg == STR) {
++        ret = lingsi_kcs->reg.status;
++    } else {
++        dev_err(kcs_bmc->dev, "lingsi_kcs_inb error\n");
++        while (1)
++            ;
++    }
++    return ret;
++}
++
++static void lingsi_kcs_outb(struct kcs_bmc_device *kcs_bmc, u32 reg, u8 data)
++{
++    struct lingsi_kcs_bmc *lingsi_kcs = to_lingsi_kcs_bmc(kcs_bmc);
++    unsigned long flags;
++    if (reg == ODR) {
++        spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
++        lingsi_kcs->reg.status |= KCS_BMC_STR_OBF;
++        lingsi_kcs->reg.data_out = data;
++        spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
++        if (lingsi_kcs->up_irq.type & IRQ_TYPE_EDGE_BOTH) {
++            espi_lpc_raise_edge_irq(lingsi_kcs->parent, lingsi_kcs->up_irq.id);
++        } else if (lingsi_kcs->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++            espi_lpc_set_level_irq(lingsi_kcs->parent, lingsi_kcs->up_irq.id, 1);
++        }
++    } else {
++        dev_err(kcs_bmc->dev, "lingsi_kcs_outb error\n");
++        while (1)
++            ;
++    }
++}
++
++static void lingsi_kcs_updateb(struct kcs_bmc_device *kcs_bmc, u32 reg, u8 mask, u8 data)
++{
++    struct lingsi_kcs_bmc *lingsi_kcs = to_lingsi_kcs_bmc(kcs_bmc);
++    unsigned long flags;
++    if (reg == STR) {
++        spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
++        lingsi_kcs->reg.status = (lingsi_kcs->reg.status & ~mask) | data;
++        spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
++    } else {
++        dev_err(kcs_bmc->dev, "lingsi_kcs_updateb error\n");
++        while (1)
++            ;
++    }
++}
++
++static void lingsi_kcs_irq_mask_update(struct kcs_bmc_device *kcs_bmc, u8 mask, u8 state)
++{
++    struct lingsi_kcs_bmc *lingsi_kcs = to_lingsi_kcs_bmc(kcs_bmc);
++    lingsi_kcs->event_mask = (lingsi_kcs->event_mask & ~mask) | state;
++}
++
++static const struct kcs_bmc_device_ops lingsi_kcs_ops = {
++    .irq_mask_update = lingsi_kcs_irq_mask_update,
++    .io_inputb = lingsi_kcs_inb,
++    .io_outputb = lingsi_kcs_outb,
++    .io_updateb = lingsi_kcs_updateb,
++};
++
++static int lingsi_kcs_of_get_channel(struct platform_device *pdev)
++{
++    struct device_node *np;
++    u32 channel;
++    int rc;
++
++    np = pdev->dev.of_node;
++
++    rc = of_property_read_u32(np, "kcs_chan", &channel);
++    if ((rc != 0) || channel == 0) {
++        dev_err(&pdev->dev, "no valid 'kcs_chan' configured\n");
++        return -EINVAL;
++    }
++
++    return channel;
++}
++
++static int lingsi_kcs_of_get_io_address(struct platform_device *pdev, u32 addrs[2])
++{
++    int rc;
++
++    rc = of_property_read_u32(pdev->dev.of_node, "kcs_addr", addrs);
++    if (rc || addrs[0] > 0xffff) {
++        dev_err(&pdev->dev, "no valid 'kcs_addr' configured\n");
++        return -EINVAL;
++    }
++    addrs[1] = addrs[0] + 1;
++    return 2;
++}
++
++static void data_cmd_stt_iowr(struct lingsi_kcs_bmc *lingsi_kcs, u8 size, u8 *data, bool is_data)
++{
++    unsigned long flags;
++    spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
++    lingsi_kcs->reg.data_in = data[0];
++    lingsi_kcs->reg.status |= KCS_BMC_STR_IBF;
++    if (is_data) {
++        lingsi_kcs->reg.status &= ~KCS_BMC_STR_CMD_DAT;
++    } else {
++        lingsi_kcs->reg.status |= KCS_BMC_STR_CMD_DAT;
++    }
++    spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
++    if (lingsi_kcs->event_mask & KCS_BMC_EVENT_TYPE_IBF) {
++        kcs_bmc_handle_event(&lingsi_kcs->kcs_bmc);
++    }
++}
++
++static void data_io_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    u8 *val = res;
++    struct lingsi_kcs_bmc *lingsi_kcs = ioport->ctx;
++    unsigned long flags;
++    spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
++    *val = lingsi_kcs->reg.data_out;
++    lingsi_kcs->reg.status &= ~KCS_BMC_STR_OBF;
++    spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
++    if (lingsi_kcs->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++        espi_lpc_set_level_irq(lingsi_kcs->parent, lingsi_kcs->up_irq.id, 0);
++    }
++    if (lingsi_kcs->event_mask & KCS_BMC_EVENT_TYPE_OBE) {
++        kcs_bmc_handle_event(&lingsi_kcs->kcs_bmc);
++    }
++}
++
++static void data_io_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_kcs_bmc *lingsi_kcs = ioport->ctx;
++    data_cmd_stt_iowr(lingsi_kcs, size, data, true);
++}
++
++static void cmd_stt_io_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_kcs_bmc *lingsi_kcs = ioport->ctx;
++    unsigned long flags;
++    u8 *val = res;
++    spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
++    *val = lingsi_kcs->reg.status;
++    spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
++}
++
++static void cmd_stt_io_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_kcs_bmc *lingsi_kcs = ioport->ctx;
++    data_cmd_stt_iowr(lingsi_kcs, size, data, false);
++}
++
++static int lingsi_kcs_probe(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    struct lingsi_kcs_bmc *priv;
++    struct kcs_bmc_device *kcs_bmc;
++    struct platform_device *parent_pdev;
++    struct lingsi_espi_lpc_struct *espi_lpc;
++    u32 addrs[2], chan;
++    int nr_addrs;
++    int rc;
++
++    struct device_node *parent = of_get_parent(dev->of_node);
++    if (!parent) {
++        dev_err(dev, "cannot get parent node\n");
++        return -ENODEV;
++    }
++    parent_pdev = of_find_device_by_node(parent);
++    if (!parent_pdev) {
++        dev_err(dev, "cannot get parent device\n");
++        return -ENODEV;
++    }
++    espi_lpc = platform_get_drvdata(parent_pdev);
++    if (!espi_lpc) {
++        dev_err(dev, "espi lpc not inited\n");
++        return -EPROBE_DEFER;
++    }
++
++    priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
++    if (!priv)
++        return -ENOMEM;
++    priv->parent = espi_lpc;
++
++    chan = lingsi_kcs_of_get_channel(pdev);
++    if (chan < 0)
++        return chan;
++
++    nr_addrs = lingsi_kcs_of_get_io_address(pdev, addrs);
++    if (nr_addrs < 0)
++        return nr_addrs;
++
++    rc = of_property_read_u32_array(pdev->dev.of_node, "kcs_upstream_irq", (u32 *)&priv->up_irq, 2);
++    if (rc) {
++        priv->up_irq.type = IRQ_TYPE_NONE;
++    }
++
++    espi_lpc_add_ioport(espi_lpc, &priv->io_data, data_io_read, data_io_write, addrs[0], priv);
++
++    espi_lpc_add_ioport(espi_lpc, &priv->io_cmd_stt, cmd_stt_io_read, cmd_stt_io_write, addrs[1], priv);
++
++    spin_lock_init(&priv->reg.lock);
++
++    kcs_bmc = &priv->kcs_bmc;
++    kcs_bmc->dev = &pdev->dev;
++    kcs_bmc->channel = chan;
++    kcs_bmc->ioreg.idr = IDR;
++    kcs_bmc->ioreg.odr = ODR;
++    kcs_bmc->ioreg.str = STR;
++    kcs_bmc->ops = &lingsi_kcs_ops;
++
++    platform_set_drvdata(pdev, priv);
++
++    // npcm7xx_kcs_irq_mask_update(kcs_bmc, (KCS_BMC_EVENT_TYPE_IBF | KCS_BMC_EVENT_TYPE_OBE), 0);
++    // npcm7xx_kcs_enable_channel(kcs_bmc, true);
++
++    rc = kcs_bmc_add_device(kcs_bmc);
++    if (rc) {
++        dev_warn(&pdev->dev, "Failed to register channel %d: %d\n", kcs_bmc->channel, rc);
++        return rc;
++    }
++
++    // pr_info("channel=%u idr=0x%x odr=0x%x str=0x%x\n",
++    // 	chan,
++    // 	kcs_bmc->ioreg.idr, kcs_bmc->ioreg.odr, kcs_bmc->ioreg.str);
++
++    return 0;
++}
++
++static int lingsi_kcs_remove(struct platform_device *pdev)
++{
++    struct lingsi_kcs_bmc *priv = platform_get_drvdata(pdev);
++    struct kcs_bmc_device *kcs_bmc = &priv->kcs_bmc;
++
++    kcs_bmc_remove_device(kcs_bmc);
++    espi_lpc_remove_ioport(&priv->io_data);
++    espi_lpc_remove_ioport(&priv->io_cmd_stt);
++    // npcm7xx_kcs_enable_channel(kcs_bmc, false);
++    // npcm7xx_kcs_irq_mask_update(kcs_bmc, (KCS_BMC_EVENT_TYPE_IBF | KCS_BMC_EVENT_TYPE_OBE), 0);
++
++    return 0;
++}
++
++static const struct of_device_id lingsi_kcs_bmc_match[] = {
++    { .compatible = "lingsi,kcs-bmc" },
++    {}
++};
++MODULE_DEVICE_TABLE(of, lingsi_kcs_bmc_match);
++
++static struct platform_driver lingsi_kcs_bmc_driver = {
++    .driver = {
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_kcs_bmc_match,
++    },
++    .probe = lingsi_kcs_probe,
++    .remove = lingsi_kcs_remove,
++};
++module_platform_driver(lingsi_kcs_bmc_driver);
++
++MODULE_LICENSE("GPL");
+diff --git a/drivers/char/ipmi/lingsi/lingsi_lpc.c b/drivers/char/ipmi/lingsi/lingsi_lpc.c
+new file mode 100644
+index 000000000000..82c48f124b6a
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_lpc.c
+@@ -0,0 +1,242 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/of.h>
++#include <linux/io.h>
++#include <linux/platform_device.h>
++#include <linux/irq.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/syscon.h>
++#include <linux/atomic.h>
++#include <linux/list.h>
++#include <linux/stdarg.h>
++#include "lingsi_espi_lpc_common.h"
++#define DEVICE_NAME "lingsi-lpc"
++
++#define LPC_CTRL0                   0x000
++#define LPC_SERIRQ_STOP_TO_MASK     GENMASK(27, 20)
++#define LPC_SERIRQ_STOP_TO_SHIFT    20
++#define LPC_SYNC_TO_MASK            GENMASK(19, 4)
++#define LPC_SYNC_TO_SHIFT           4
++#define LPC_CLK_PH                  BIT(1)
++#define LPC_ICAP_MODE               BIT(0)
++#define LPC_CTRL1                   0x004
++#define LPC_SYNC_MASK               GENMASK(11, 8)
++#define LPC_SYNC_SHIFT              8
++#define LPC_DATA_UP_MASK            GENMASK(7, 0)
++#define LPC_DATA_UP_SHIFT           0
++#define LPC_CTRL2_SERIRQ_SRC        0x008
++#define LPC_CTRL3                   0x00c
++#define LPC_INTR_SEND_CLR           BIT(2)
++#define LPC_SERIRQ_SEND             BIT(1)
++#define LPC_SYNC_VALID              BIT(0)
++#define LPC_INT_MSK                 0x010
++#define LPC_INT_CLR                 0x014
++#define LPC_INT_STT                 0x018
++#define LPC_INT_SERIRQ_STOP_INVALID BIT(4)
++#define LPC_INT_SERIRQ_STOP_TO      BIT(3)
++#define LPC_INT_SERIRQ_STOP         BIT(2)
++#define LPC_INT_SYNC_TO             BIT(1)
++#define LPC_INT_CMD_VALID           BIT(0)
++#define LPC_INT_RAW                 0x01c
++#define LPC_SERIRQ_SENT             0x020
++#define LPC_SERIRQ_MODE             0x024
++#define LPC_ADDR                    0x028
++#define LPC_RX                      0x02c
++#define LPC_DATA_DN_MASK            GENMASK(15, 8)
++#define LPC_DATA_DN_SHIFT           8
++#define LPC_IDCYC_MASK              GENMASK(7, 4)
++#define LPC_IDCYC_SHIFT             4
++#define LPC_START_MASK              GENMASK(3, 0)
++#define LPC_START_SHIFT             0
++#define LPC_FSM                     0x030
++
++#define LPC_TYPE_IO_READ   0x00
++#define LPC_TYPE_IO_WRITE  0x20
++#define LPC_TYPE_MEM_READ  0x40
++#define LPC_TYPE_MEM_WRITE 0x60
++
++static void serirq_int_set(struct lingsi_espi_lpc_struct *lpc, bool unmask)
++{
++    u32 int_msk;
++    unsigned long flags;
++    spin_lock_irqsave(&lpc->u.lpc.int_msk_lock, flags);
++    int_msk = ioread32(lpc->base + LPC_INT_MSK);
++    if (!unmask) {
++        int_msk &= ~LPC_INT_SERIRQ_STOP;
++    } else {
++        int_msk |= LPC_INT_SERIRQ_STOP;
++    }
++    iowrite32(int_msk, lpc->base + LPC_INT_MSK);
++    spin_unlock_irqrestore(&lpc->u.lpc.int_msk_lock, flags);
++}
++
++static irqreturn_t lingsi_lpc_irq(int irq, void *arg)
++{
++    struct lingsi_espi_lpc_struct *lpc = arg;
++    unsigned int_stt = ioread32(lpc->base + LPC_INT_STT);
++    if (int_stt & LPC_INT_CMD_VALID) {
++        u32 addr = ioread32(lpc->base + LPC_ADDR);
++        u32 rx = ioread32(lpc->base + LPC_RX);
++        u8 start_cycle_dir = rx & 0xff;
++        u8 data = rx >> 8;
++        u32 res = 0;
++        iowrite32(LPC_INT_CMD_VALID, lpc->base + LPC_INT_CLR);
++        switch (start_cycle_dir) {
++        case LPC_TYPE_IO_READ:
++            iord_short(lpc, 1, addr, &res);
++            break;
++        case LPC_TYPE_IO_WRITE:
++            iowr_short(lpc, 1, addr, &data);
++            break;
++        case LPC_TYPE_MEM_READ:
++            memrd_short(lpc, 1, addr, &res);
++            break;
++        case LPC_TYPE_MEM_WRITE:
++            memwr_short(lpc, 1, addr, &data);
++            break;
++        default:
++            BUG_ON(1);
++            while (1)
++                ;
++            break;
++        }
++        iowrite32(res, lpc->base + LPC_CTRL1);
++        iowrite32(LPC_SYNC_VALID, lpc->base + LPC_CTRL3);
++    }
++    if (int_stt & LPC_INT_SYNC_TO) {
++        iowrite32(LPC_INT_SYNC_TO, lpc->base + LPC_INT_CLR);
++        BUG_ON(1);
++        while (1)
++            ;
++    }
++    if (int_stt & LPC_INT_SERIRQ_STOP) {
++        u32 serirq_sent = ioread32(lpc->base + LPC_SERIRQ_SENT);
++        u32 serirq_src;
++        unsigned long flags;
++        spin_lock_irqsave(&lpc->u.lpc.serirq_src_lock, flags);
++        serirq_src = ioread32(lpc->base + LPC_CTRL2_SERIRQ_SRC);
++        serirq_src ^= (serirq_sent & lpc->u.lpc.serirq_edge_mask);
++        iowrite32(serirq_src, lpc->base + LPC_CTRL2_SERIRQ_SRC);
++        spin_unlock_irqrestore(&lpc->u.lpc.serirq_src_lock, flags);
++        iowrite32(LPC_INT_SERIRQ_STOP, lpc->base + LPC_INT_CLR);
++        if (!(serirq_src & lpc->u.lpc.serirq_edge_mask)) {
++            serirq_int_set(lpc, false);
++        }
++    }
++    if (int_stt & LPC_INT_SERIRQ_STOP_TO) {
++        iowrite32(LPC_INT_SERIRQ_STOP_TO, lpc->base + LPC_INT_CLR);
++        BUG_ON(1);
++        while (1)
++            ;
++    }
++    if (int_stt & LPC_INT_SERIRQ_STOP_INVALID) {
++        iowrite32(LPC_INT_SERIRQ_STOP_INVALID, lpc->base + LPC_INT_CLR);
++        BUG_ON(1);
++        while (1)
++            ;
++    }
++    return IRQ_HANDLED;
++}
++
++static void lpc_reg_init(void __iomem *base)
++{
++    iowrite32(LPC_INT_CMD_VALID | LPC_INT_SYNC_TO | LPC_INT_SERIRQ_STOP | LPC_INT_SERIRQ_STOP_TO | LPC_INT_SERIRQ_STOP_INVALID, base + LPC_INT_CLR);
++    iowrite32(LPC_INT_SYNC_TO | LPC_INT_SERIRQ_STOP_INVALID | LPC_INT_SERIRQ_STOP_TO | LPC_INT_CMD_VALID, base + LPC_INT_MSK);
++}
++
++static void lpc_send_edge_int_evt(struct lingsi_espi_lpc_struct *lpc, u8 idx)
++{
++    u32 serirq;
++    unsigned long flags;
++    lpc->u.lpc.serirq_edge_mask |= 1 << idx;
++    spin_lock_irqsave(&lpc->u.lpc.serirq_src_lock, flags);
++    serirq = ioread32(lpc->base + LPC_CTRL2_SERIRQ_SRC);
++    serirq |= 1 << idx;
++    iowrite32(serirq, lpc->base + LPC_CTRL2_SERIRQ_SRC);
++    spin_unlock_irqrestore(&lpc->u.lpc.serirq_src_lock, flags);
++    serirq_int_set(lpc, true);
++}
++
++static void lpc_send_level_int_evt(struct lingsi_espi_lpc_struct *lpc, u8 idx, u8 active)
++{
++    unsigned long flags;
++    u32 serirq;
++    spin_lock_irqsave(&lpc->u.lpc.serirq_src_lock, flags);
++    serirq = ioread32(lpc->base + LPC_CTRL2_SERIRQ_SRC);
++    if (active) {
++        serirq |= 1 << idx;
++    } else {
++        serirq &= ~1 << idx;
++    }
++    iowrite32(serirq, lpc->base + LPC_CTRL2_SERIRQ_SRC);
++    spin_unlock_irqrestore(&lpc->u.lpc.serirq_src_lock, flags);
++}
++
++static int lingsi_lpc_probe(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    struct lingsi_espi_lpc_struct *priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++    struct resource *res;
++    int irq, rc;
++    if (!priv)
++        return -ENOMEM;
++
++    priv->raise_edge_irq = lpc_send_edge_int_evt;
++    priv->set_level_irq = lpc_send_level_int_evt;
++
++    res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++    if (!res) {
++        dev_err(dev, "cannot get resource\n");
++        return -ENODEV;
++    }
++    priv->base = devm_ioremap_resource(dev, res);
++    if (IS_ERR(priv->base)) {
++        dev_err(dev, "cannot map registers\n");
++        return PTR_ERR(priv->base);
++    }
++    irq = platform_get_irq(pdev, 0);
++    if (irq < 0) {
++        dev_err(dev, "cannot get irq\n");
++        return irq;
++    }
++    rc = devm_request_irq(dev, irq, lingsi_lpc_irq, IRQF_SHARED, dev_name(dev), priv);
++    if (rc < 0) {
++        dev_err(dev, "cannot request irq\n");
++        return rc;
++    }
++
++    INIT_LIST_HEAD(&priv->peri_io_list);
++    INIT_LIST_HEAD(&priv->peri_mem_list);
++    spin_lock_init(&priv->u.lpc.serirq_src_lock);
++    spin_lock_init(&priv->u.lpc.int_msk_lock);
++
++    platform_set_drvdata(pdev, priv);
++
++    lpc_reg_init(priv->base);
++
++    return 0;
++}
++
++static int lingsi_lpc_remove(struct platform_device *pdev)
++{
++    return 0;
++}
++
++static const struct of_device_id lingsi_lpc_match[] = {
++    { .compatible = "lingsi,lpc" },
++    {}
++};
++MODULE_DEVICE_TABLE(of, lingsi_lpc_match);
++
++static struct platform_driver lingsi_lpc_driver = {
++    .driver = {
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_lpc_match,
++    },
++    .probe = lingsi_lpc_probe,
++    .remove = lingsi_lpc_remove,
++};
++module_platform_driver(lingsi_lpc_driver);
++
++MODULE_LICENSE("GPL");
+diff --git a/drivers/char/ipmi/lingsi/lingsi_mmbi.c b/drivers/char/ipmi/lingsi/lingsi_mmbi.c
+new file mode 100644
+index 000000000000..c50a822666b7
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_mmbi.c
+@@ -0,0 +1,221 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/of.h>
++#include <linux/io.h>
++#include <linux/platform_device.h>
++#include <linux/irq.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/syscon.h>
++#include <linux/atomic.h>
++#include <linux/of_platform.h>
++#include <linux/sizes.h>
++#include "lingsi_espi_lpc_common.h"
++#define DEVICE_NAME         "lingsi-mmbi"
++#define MMBI_DESC_SIGNATURE "#MMBI$"
++// #define SET_B_UP(mmbi) set_bit(1,(void *)&((mmbi)->ros.b2h_wp))
++// #define CLR_B_UP(mmbi) clear_bit(1,(void *)&((mmbi)->ros.b2h_wp))
++// #define SET_B_RST(mmbi) set_bit(0,(void *)&((mmbi)->ros.b2h_wp))
++// #define CLR_B_RST(mmbi) clear_bit(0,(void *)&((mmbi)->ros.b2h_wp))
++
++struct host_ros {
++    u32 b2h_wp;
++    u32 h2b_rp;
++};
++
++struct host_rws {
++    u32 h2b_wp;
++    u32 b2h_rp;
++};
++
++struct mmbi_desc {
++    u8 signature[6];
++    u8 version;
++    u8 os_use;
++    u32 b2h_ba;
++    u32 h2b_ba;
++    u32 b2h_l;
++    u32 h2b_l;
++    u8 buft;
++    u8 reserved0[7];
++    u32 h_ros_p;
++    u32 h_rws_p;
++    u8 h_int_t;
++    u8 h_int_l;
++    u8 reserved1[3];
++    u8 h_int_v;
++    u8 bmc_int_t;
++    u32 bmc_int_l;
++    u8 reserved2[4];
++    u8 bmc_int_v;
++    u8 reserved3[8];
++} __attribute__((packed));
++
++struct mmbi_struct {
++    struct mmbi_desc desc;
++    struct host_ros ros;
++    struct host_rws rws;
++    u32 buf[];
++};
++
++struct lingsi_mmbi {
++    struct lingsi_espi_lpc_struct *parent;
++    struct lingsi_peri_mem mem;
++    u32 host_addr;
++    u32 size_order;
++    u8 vw_idx;
++    u8 vw_data;
++    struct mmbi_struct *virt;
++};
++
++static inline u32 get_mmbi_total_size(struct lingsi_mmbi *priv)
++{
++    return PAGE_SIZE * (1 << priv->size_order);
++}
++
++static void init_mmbi_mem(struct lingsi_mmbi *priv, u32 total_size)
++{
++    struct mmbi_struct *base = priv->virt;
++    memcpy(base->desc.signature, MMBI_DESC_SIGNATURE, sizeof(base->desc.signature));
++    base->desc.version = 1;
++    base->desc.os_use = 0;
++    base->desc.b2h_l = (total_size - sizeof(struct mmbi_struct)) / 2;
++    base->desc.h2b_l = (total_size - sizeof(struct mmbi_struct)) / 2;
++    base->desc.b2h_ba = (u32)((u8 *)base->buf - (u8 *)base) / 8;
++    base->desc.h2b_ba = (u32)((u8 *)base->buf - (u8 *)base + total_size - base->desc.h2b_l) / 8;
++    base->desc.buft = 1;
++    base->desc.h_ros_p = (u32)((u8 *)&base->ros - (u8 *)base) / 8;
++    base->desc.h_rws_p = (u32)((u8 *)&base->rws - (u8 *)base) / 8;
++    base->desc.h_int_t = 3;
++    base->desc.h_int_l = priv->vw_idx;
++    base->desc.h_int_v = priv->vw_data;
++    base->desc.bmc_int_t = 0;
++    base->desc.bmc_int_l = 0;
++    base->desc.bmc_int_v = 0;
++    //SET_B_UP(base);
++}
++
++static bool mmbi_host_read(struct lingsi_peri_mem *mem, u32 addr, u8 size, void *res)
++{
++    struct lingsi_mmbi *priv = mem->ctx;
++    if (priv->host_addr > addr || priv->host_addr + get_mmbi_total_size(priv) <= addr) {
++        return false;
++    }
++    switch (size) {
++    case 1:
++        *(u8 *)res = *((u8 *)priv->virt + addr - priv->host_addr);
++        break;
++    case 2:
++        *(u16 *)res = *(u16 *)((u8 *)priv->virt + addr - priv->host_addr);
++        break;
++    case 4:
++        *(u32 *)res = *(u32 *)((u8 *)priv->virt + addr - priv->host_addr);
++        break;
++    default:
++        BUG_ON(1);
++        break;
++    }
++    return true;
++}
++
++static bool mmbi_host_write(struct lingsi_peri_mem *mem, u32 addr, u8 size, u8 *data)
++{
++    struct lingsi_mmbi *priv = mem->ctx;
++    if (priv->host_addr > addr || priv->host_addr + get_mmbi_total_size(priv) <= addr) {
++        return false;
++    }
++    switch (size) {
++    case 1:
++        *((u8 *)priv->virt + addr - priv->host_addr) = data[0];
++        break;
++    case 2:
++        *(u16 *)((u8 *)priv->virt + addr - priv->host_addr) = data[1] << 8 | data[0];
++        break;
++    case 4:
++        *(u32 *)((u8 *)priv->virt + addr - priv->host_addr) = data[3] << 24 | data[2] << 16 | data[1] << 8 | data[0];
++        break;
++    default:
++        BUG_ON(1);
++        break;
++    }
++    return true;
++}
++
++static int lingsi_mmbi_probe(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    struct platform_device *parent_pdev;
++    struct lingsi_espi_lpc_struct *espi_lpc;
++    struct lingsi_mmbi *priv;
++    struct device_node *parent = of_get_parent(dev->of_node);
++    int rc;
++    if (!parent) {
++        dev_err(dev, "cannot get parent node\n");
++        return -ENODEV;
++    }
++    parent_pdev = of_find_device_by_node(parent);
++    if (!parent_pdev) {
++        dev_err(dev, "cannot get parent device\n");
++        return -ENODEV;
++    }
++    espi_lpc = platform_get_drvdata(parent_pdev);
++    if (!espi_lpc) {
++        dev_err(dev, "espi lpc not inited\n");
++        return -EPROBE_DEFER;
++    }
++    priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
++    if (!priv) {
++        dev_err(dev, "cannot alloc lingsi_mmbi mem\n");
++        return -ENOMEM;
++    }
++    priv->parent = espi_lpc;
++    rc = of_property_read_u32(dev->of_node, "host-addr", &priv->host_addr);
++    if (rc) {
++        dev_err(dev, "cannot get MMBI host address\n");
++        return -ENODEV;
++    }
++    rc = of_property_read_u32(dev->of_node, "size-order", &priv->size_order);
++    if (rc) {
++        dev_err(dev, "cannot get MMBI size order\n");
++        return -EINVAL;
++    }
++    priv->virt = (void *)devm_get_free_pages(dev, GFP_KERNEL, priv->size_order);
++    if (!priv->virt) {
++        dev_err(dev, "cannot alloc mmbi mem\n");
++        return -ENOMEM;
++    }
++    init_mmbi_mem(priv, get_mmbi_total_size(priv));
++
++    espi_lpc_add_mem(espi_lpc, &priv->mem, mmbi_host_read, mmbi_host_write, priv);
++    ;
++
++    platform_set_drvdata(pdev, priv);
++
++    return 0;
++}
++
++static int lingsi_mmbi_remove(struct platform_device *pdev)
++{
++    struct lingsi_mmbi *priv = platform_get_drvdata(pdev);
++    espi_lpc_remove_mem(&priv->mem);
++
++    return 0;
++}
++
++static const struct of_device_id lingsi_mmbi_match[] = {
++    { .compatible = "lingsi,mmbi" },
++    {}
++};
++MODULE_DEVICE_TABLE(of, lingsi_mmbi_match);
++
++static struct platform_driver lingsi_mmbi_driver = {
++    .driver = {
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_mmbi_match,
++    },
++    .probe = lingsi_mmbi_probe,
++    .remove = lingsi_mmbi_remove,
++};
++module_platform_driver(lingsi_mmbi_driver);
++
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_sio.c b/drivers/char/ipmi/lingsi/lingsi_sio.c
+new file mode 100644
+index 000000000000..b230526e93a3
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_sio.c
+@@ -0,0 +1,202 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/of.h>
++#include <linux/io.h>
++#include <linux/platform_device.h>
++#include <linux/irq.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/syscon.h>
++#include <linux/atomic.h>
++#include <linux/of_platform.h>
++#include "lingsi_espi_lpc_common.h"
++#define DEVICE_NAME "lingsi-sio"
++
++struct lingsi_ldn_dev {
++    u8 base_addr_lsb;
++    u8 base_addr_msb;
++    u8 enable;
++};
++
++struct lingsi_sio {
++    struct lingsi_espi_lpc_struct *parent;
++    struct lingsi_peri_ioport io_2e, io_2f;
++    struct lingsi_ldn_dev ldn_2, ldn_3, ldn_4, ldn_7,
++        ldn_b, ldn_c, ldn_d, ldn_e, ldn_f;
++    struct lingsi_ldn_dev *ldn;
++    u8 index;
++    u8 ldn_num;
++    u8 reg_2x[16];
++};
++
++static void select_ldn(struct lingsi_sio *sio, u8 ldn_num)
++{
++    switch (ldn_num) {
++    case 0x2:
++        sio->ldn = &sio->ldn_2;
++        break;
++    case 0x3:
++        sio->ldn = &sio->ldn_3;
++        break;
++    case 0x4:
++        sio->ldn = &sio->ldn_4;
++        break;
++    case 0x7:
++        sio->ldn = &sio->ldn_7;
++        break;
++    case 0xb:
++        sio->ldn = &sio->ldn_b;
++        break;
++    case 0xc:
++        sio->ldn = &sio->ldn_c;
++        break;
++    case 0xd:
++        sio->ldn = &sio->ldn_d;
++        break;
++    case 0xe:
++        sio->ldn = &sio->ldn_e;
++        break;
++    case 0xf:
++        sio->ldn = &sio->ldn_f;
++        break;
++    }
++}
++
++static void io_2e_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_sio *priv = ioport->ctx;
++    u8 *val = res;
++    *val = priv->index;
++}
++
++static void io_2e_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_sio *priv = ioport->ctx;
++    priv->index = *data;
++}
++
++static u8 ldn_dev_read(struct lingsi_ldn_dev *ldn, u8 index)
++{
++    u8 val = 0;
++    switch (index) {
++    case 0x30:
++        val = ldn->enable;
++        break;
++    case 0x60:
++        val = ldn->base_addr_msb;
++        break;
++    case 0x61:
++        val = ldn->base_addr_lsb;
++        break;
++    }
++    return val;
++}
++
++static void io_2f_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_sio *sio = ioport->ctx;
++    u8 *val = res;
++    if (sio->index == 0x7) {
++        *val = sio->ldn_num;
++    } else if (sio->index == 0x20) {
++        *val = 0x26;
++    } else if (sio->index >= 0x20 && sio->index < 0x30) {
++        *val = sio->reg_2x[sio->index & 0xf];
++    } else {
++        BUG_ON(sio->ldn == NULL);
++        *val = ldn_dev_read(sio->ldn, sio->index);
++    }
++}
++
++static void ldn_dev_write(struct lingsi_ldn_dev *ldn, u8 index, u8 val)
++{
++    switch (index) {
++    case 0x30:
++        ldn->enable = val;
++        break;
++    case 0x60:
++        ldn->base_addr_msb = val;
++        break;
++    case 0x61:
++        ldn->base_addr_lsb = val;
++        break;
++    }
++}
++
++static void io_2f_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_sio *sio = ioport->ctx;
++    if (sio->index == 0x7) {
++        sio->ldn_num = *data;
++        select_ldn(sio, sio->ldn_num);
++    } else if (sio->index >= 0x20 && sio->index < 0x30) {
++        sio->reg_2x[sio->index & 0xf] = *data;
++    } else {
++        BUG_ON(sio->ldn == NULL);
++        ldn_dev_write(sio->ldn, sio->index, *data);
++    }
++}
++
++#define SIO_PORT_ADD(x)    espi_lpc_add_ioport(espi_lpc, &priv->io_##x, io_##x##_read, io_##x##_write, 0x##x, priv)
++#define SIO_PORT_REMOVE(x) espi_lpc_remove_ioport(&priv->io_##x)
++
++static int lingsi_sio_probe(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    struct platform_device *parent_pdev;
++    struct lingsi_espi_lpc_struct *espi_lpc;
++    struct lingsi_sio *priv;
++    struct device_node *parent = of_get_parent(dev->of_node);
++    if (!parent) {
++        dev_err(dev, "cannot get parent node\n");
++        return -ENODEV;
++    }
++    parent_pdev = of_find_device_by_node(parent);
++    if (!parent_pdev) {
++        dev_err(dev, "cannot get parent device\n");
++        return -ENODEV;
++    }
++    espi_lpc = platform_get_drvdata(parent_pdev);
++    if (!espi_lpc) {
++        dev_err(dev, "espi lpc not inited\n");
++        return -EPROBE_DEFER;
++    }
++    priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
++    if (!priv) {
++        dev_err(dev, "cannot alloc lingsi_sio mem\n");
++        return -ENOMEM;
++    }
++    priv->parent = espi_lpc;
++    SIO_PORT_ADD(2e);
++    SIO_PORT_ADD(2f);
++
++    platform_set_drvdata(pdev, priv);
++
++    return 0;
++}
++
++static int lingsi_sio_remove(struct platform_device *pdev)
++{
++    struct lingsi_sio *priv = platform_get_drvdata(pdev);
++    SIO_PORT_REMOVE(2e);
++    SIO_PORT_REMOVE(2f);
++    return 0;
++}
++
++static const struct of_device_id lingsi_sio_match[] = {
++    { .compatible = "lingsi,sio" },
++    {}
++};
++MODULE_DEVICE_TABLE(of, lingsi_sio_match);
++
++static struct platform_driver lingsi_sio_driver = {
++    .driver = {
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_sio_match,
++    },
++    .probe = lingsi_sio_probe,
++    .remove = lingsi_sio_remove,
++};
++module_platform_driver(lingsi_sio_driver);
++
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_vuart.c b/drivers/char/ipmi/lingsi/lingsi_vuart.c
+new file mode 100644
+index 000000000000..c9f00e4e8813
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_vuart.c
+@@ -0,0 +1,156 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/of.h>
++#include <linux/io.h>
++#include <linux/of_platform.h>
++#include <linux/serial.h>
++#include <linux/serial_core.h>
++#include <linux/tty.h>
++#include <linux/tty_flip.h>
++#include "lingsi_vuart.h"
++#define DEVICE_NAME           "lingsi-vuart"
++#define LINGSI_VUART_NR_UARTS 3
++
++static struct uart_driver lingsi_vuart_driver = {
++    .owner = THIS_MODULE,
++    .driver_name = DEVICE_NAME,
++    .dev_name = "ttyVS",
++    .major = 0,
++    .minor = 0,
++    .nr = LINGSI_VUART_NR_UARTS,
++};
++
++bool lingsi_vuart_local_tx_empty(struct lingsi_vuart *vuart)
++{
++    struct uart_port *port = &vuart->port;
++    struct circ_buf *xmit = &port->state->xmit;
++    return !vuart->local_enabled || uart_circ_empty(xmit);
++}
++EXPORT_SYMBOL(lingsi_vuart_local_tx_empty);
++
++u8 lingsi_vuart_get_tx_char(struct lingsi_vuart *vuart)
++{
++    u8 val;
++    struct circ_buf *xmit = &vuart->port.state->xmit;
++    val = xmit->buf[xmit->tail++];
++    xmit->tail %= UART_XMIT_SIZE;
++    vuart->port.icount.tx++;
++    return val;
++}
++EXPORT_SYMBOL(lingsi_vuart_get_tx_char);
++
++void lingsi_vuart_char_rx_handle(struct lingsi_vuart *vuart, u8 val)
++{
++    struct uart_port *port = &vuart->port;
++    if (vuart->local_enabled) {
++        port->icount.rx++;
++        tty_insert_flip_char(&port->state->port, val, TTY_NORMAL);
++        tty_flip_buffer_push(&port->state->port);
++    }
++}
++EXPORT_SYMBOL(lingsi_vuart_char_rx_handle);
++
++static unsigned int lingsi_vuart_tx_empty(struct uart_port *port)
++{
++    return TIOCSER_TEMT;
++}
++
++static unsigned int lingsi_vuart_get_mctrl(struct uart_port *port)
++{
++    return TIOCM_CTS | TIOCM_DSR | TIOCM_CAR;
++}
++
++static void lingsi_vuart_set_mctrl(struct uart_port *port, unsigned int mctrl)
++{
++}
++
++static void lingsi_vuart_stop_tx(struct uart_port *port)
++{
++}
++
++static void lingsi_vuart_stop_rx(struct uart_port *port)
++{
++}
++
++static void lingsi_vuart_start_tx(struct uart_port *port)
++{
++}
++
++static void lingsi_vuart_set_termios(struct uart_port *port,
++                                     struct ktermios *termios,
++                                     const struct ktermios *old)
++{
++}
++
++static int lingsi_vuart_startup(struct uart_port *port)
++{
++    struct lingsi_vuart *priv = container_of(port, struct lingsi_vuart, port);
++    priv->local_enabled = true;
++    return 0;
++}
++
++static void lingsi_vuart_shutdown(struct uart_port *port)
++{
++    struct lingsi_vuart *priv = container_of(port, struct lingsi_vuart, port);
++    priv->local_enabled = false;
++}
++
++static const char *lingsi_vuart_type(struct uart_port *port)
++{
++    return DEVICE_NAME;
++}
++
++static void lingsi_vuart_config_port(struct uart_port *port, int flags)
++{
++}
++
++static const struct uart_ops lingsi_vuart_ops = {
++    .tx_empty = lingsi_vuart_tx_empty,
++    .get_mctrl = lingsi_vuart_get_mctrl,
++    .set_mctrl = lingsi_vuart_set_mctrl,
++    .start_tx = lingsi_vuart_start_tx,
++    .stop_tx = lingsi_vuart_stop_tx,
++    .stop_rx = lingsi_vuart_stop_rx,
++    .startup = lingsi_vuart_startup,
++    .shutdown = lingsi_vuart_shutdown,
++    .set_termios = lingsi_vuart_set_termios,
++    .type = lingsi_vuart_type,
++    .config_port = lingsi_vuart_config_port,
++};
++
++int lingsi_vuart_port_add(struct lingsi_vuart *vuart, struct device *dev, int id)
++{
++    if (id >= LINGSI_VUART_NR_UARTS) {
++        return -EINVAL;
++    }
++    vuart->port.dev = dev;
++    vuart->port.line = id;
++    vuart->port.iotype = UPIO_MEM;
++    vuart->port.ops = &lingsi_vuart_ops;
++    vuart->port.flags = UPF_BOOT_AUTOCONF;
++    vuart->port.type = PORT_16550A;
++    return uart_add_one_port(&lingsi_vuart_driver, &vuart->port);
++}
++EXPORT_SYMBOL(lingsi_vuart_port_add);
++
++void lingsi_vuart_port_remove(struct lingsi_vuart *vuart)
++{
++    uart_remove_one_port(&lingsi_vuart_driver, &vuart->port);
++}
++EXPORT_SYMBOL(lingsi_vuart_port_remove);
++
++static int __init lingsi_vuart_init(void)
++{
++    return uart_register_driver(&lingsi_vuart_driver);
++}
++
++static void __exit lingsi_vuart_exit(void)
++{
++    uart_unregister_driver(&lingsi_vuart_driver);
++}
++
++module_init(lingsi_vuart_init);
++module_exit(lingsi_vuart_exit);
++
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_vuart.h b/drivers/char/ipmi/lingsi/lingsi_vuart.h
+new file mode 100644
+index 000000000000..c27669db6ecb
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_vuart.h
+@@ -0,0 +1,15 @@
++#ifndef LINGSI_VUART_H
++#define LINGSI_VUART_H
++#include <linux/serial_core.h>
++
++struct lingsi_vuart {
++    struct uart_port port;
++    bool local_enabled;
++};
++bool lingsi_vuart_local_tx_empty(struct lingsi_vuart *vuart);
++u8 lingsi_vuart_get_tx_char(struct lingsi_vuart *vuart);
++void lingsi_vuart_char_rx_handle(struct lingsi_vuart *vuart, u8 val);
++int lingsi_vuart_port_add(struct lingsi_vuart *vuart, struct device *dev, int id);
++void lingsi_vuart_port_remove(struct lingsi_vuart *vuart);
++
++#endif
+diff --git a/drivers/gpio/Kconfig b/drivers/gpio/Kconfig
+index 673bafb8be58..c8031c43d750 100644
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -823,6 +823,22 @@ config GPIO_IDT3243X
+ 	  To compile this driver as a module, choose M here: the module will
+ 	  be called gpio-idt3243x.
+ 
++config GPIO_LINGSI_GPIO
++	bool "LINGSI GPIO support"
++	depends on (ARCH_LINGSI || COMPILE_TEST) && OF_GPIO
++	select GPIO_GENERIC
++	select GPIOLIB_IRQCHIP
++	help
++	  Say Y here to support LINGSI GPIO functionality.
++
++config GPIO_LINGSI_SGPIO
++	bool "LINGSI SGPIO support"
++	depends on (ARCH_LINGSI || COMPILE_TEST) && OF_GPIO
++	select GPIO_GENERIC
++	select GPIOLIB_IRQCHIP
++	help
++	  Say Y here to support LINGSI SGPIO functionality.
++
+ endmenu
+ 
+ menu "Port-mapped I/O GPIO drivers"
+diff --git a/drivers/gpio/Makefile b/drivers/gpio/Makefile
+index eb73b5d633eb..ac202651b7d1 100644
+--- a/drivers/gpio/Makefile
++++ b/drivers/gpio/Makefile
+@@ -195,3 +195,5 @@ obj-$(CONFIG_GPIO_XTENSA)		+= gpio-xtensa.o
+ obj-$(CONFIG_GPIO_ZEVIO)		+= gpio-zevio.o
+ obj-$(CONFIG_GPIO_ZYNQ)			+= gpio-zynq.o
+ obj-$(CONFIG_GPIO_ZYNQMP_MODEPIN)	+= gpio-zynqmp-modepin.o
++obj-$(CONFIG_GPIO_LINGSI_GPIO)		+= gpio-lingsi.o
++obj-$(CONFIG_GPIO_LINGSI_SGPIO)		+= gpio-lingsi-sgpio.o
+diff --git a/drivers/gpio/gpio-lingsi-sgpio.c b/drivers/gpio/gpio-lingsi-sgpio.c
+new file mode 100644
+index 000000000000..00afeadb4a9a
+--- /dev/null
++++ b/drivers/gpio/gpio-lingsi-sgpio.c
+@@ -0,0 +1,637 @@
++#include <linux/bitfield.h>
++#include <linux/clk.h>
++#include <linux/gpio/driver.h>
++#include <linux/hashtable.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/seq_file.h>
++#include <linux/spinlock.h>
++#include <linux/string.h>
++
++#define LINGSI_SGPIO_CTRL        0x140
++
++#define LINGSI_SGPIO_CLK_DIV_MASK    GENMASK(31, 16)
++#define LINGSI_SGPIO_ENABLE        BIT(0)
++#define LINGSI_SGPIO_PINS_SHIFT        5
++
++struct lingsi_sgpio_pdata {
++    const u32 pin_mask;
++};
++
++struct lingsi_sgpio {
++    struct gpio_chip chip;
++    struct device *dev;
++    struct clk *pclk;
++    raw_spinlock_t lock;
++    void __iomem *base;
++    int irq;
++};
++
++struct lingsi_sgpio_bank {
++    u16    val_regs;
++    u16    rdata_reg;
++    u16    irq_regs;
++    u16    tolerance_regs;
++    // const char  names[4][3];
++};
++
++/*
++ * Note: The "value" register returns the input value when the GPIO is
++ *     configured as an input.
++ *
++ *     The "rdata" register returns the output value when the GPIO is
++ *     configured as an output.
++ */
++static const struct lingsi_sgpio_bank lingsi_sgpio_banks[] = {
++    {
++        .val_regs = 0x0000,
++        .rdata_reg = 0x00164,
++        .irq_regs = 0x0004,
++        .tolerance_regs = 0x0018,
++        // .names = { "A", "B", "C", "D" },
++    },
++    {
++        .val_regs = 0x001c,
++        .rdata_reg = 0x00168,
++        .irq_regs = 0x0020,
++        .tolerance_regs = 0x0034,
++        // .names = { "E", "F", "G", "H" },
++    },
++    {
++        .val_regs = 0x0038,
++        .rdata_reg = 0x0016c,
++        .irq_regs = 0x003c,
++        .tolerance_regs = 0x0050,
++        // .names = { "I", "J", "K", "L" },
++    },
++    {
++        .val_regs = 0x0054,
++        .rdata_reg = 0x00170,
++        .irq_regs = 0x0058,
++        .tolerance_regs = 0x006c,
++        // .names = { "M", "N", "O", "P" },
++    },
++    {
++        .val_regs = 0x0070,
++        .rdata_reg = 0x00174,
++        .irq_regs = 0x0074,
++        .tolerance_regs = 0x0088,
++    },
++    {
++        .val_regs = 0x008c,
++        .rdata_reg = 0x00178,
++        .irq_regs = 0x0090,
++        .tolerance_regs = 0x0104,
++    },
++    {
++        .val_regs = 0x0108,
++        .rdata_reg = 0x0017c,
++        .irq_regs = 0x010c,
++        .tolerance_regs = 0x0120,
++    },
++    {
++        .val_regs = 0x0124,
++        .rdata_reg = 0x00180,
++        .irq_regs = 0x0128,
++        .tolerance_regs = 0x013c,
++    },
++};
++
++enum lingsi_sgpio_reg {
++    reg_val,
++    reg_rdata,
++    reg_irq_enable,
++    reg_irq_type0,
++    reg_irq_type1,
++    reg_irq_type2,
++    reg_irq_status,
++    reg_tolerance,
++};
++
++#define GPIO_VAL_VALUE      0x00
++#define GPIO_IRQ_ENABLE     0x00
++#define GPIO_IRQ_TYPE0      0x04
++#define GPIO_IRQ_TYPE1      0x08
++#define GPIO_IRQ_TYPE2      0x0C
++#define GPIO_IRQ_STATUS     0x10
++
++static void __iomem *bank_reg(struct lingsi_sgpio *gpio,
++                     const struct lingsi_sgpio_bank *bank,
++                     const enum lingsi_sgpio_reg reg)
++{
++    switch (reg) {
++    case reg_val:
++        return gpio->base + bank->val_regs + GPIO_VAL_VALUE;
++    case reg_rdata:
++        return gpio->base + bank->rdata_reg;
++    case reg_irq_enable:
++        return gpio->base + bank->irq_regs + GPIO_IRQ_ENABLE;
++    case reg_irq_type0:
++        return gpio->base + bank->irq_regs + GPIO_IRQ_TYPE0;
++    case reg_irq_type1:
++        return gpio->base + bank->irq_regs + GPIO_IRQ_TYPE1;
++    case reg_irq_type2:
++        return gpio->base + bank->irq_regs + GPIO_IRQ_TYPE2;
++    case reg_irq_status:
++        return gpio->base + bank->irq_regs + GPIO_IRQ_STATUS;
++    case reg_tolerance:
++        return gpio->base + bank->tolerance_regs;
++    default:
++        /* acturally if code runs to here, it's an error case */
++        BUG();
++    }
++}
++
++#define GPIO_BANK(x)    ((x) >> 6)
++#define GPIO_OFFSET(x)  ((x) & GENMASK(5, 0))
++#define GPIO_BIT(x)     BIT(GPIO_OFFSET(x) >> 1)
++
++static const struct lingsi_sgpio_bank *to_bank(unsigned int offset)
++{
++    unsigned int bank;
++
++    bank = GPIO_BANK(offset);
++
++    WARN_ON(bank >= ARRAY_SIZE(lingsi_sgpio_banks));
++    return &lingsi_sgpio_banks[bank];
++}
++
++static int lingsi_sgpio_init_valid_mask(struct gpio_chip *gc,
++        unsigned long *valid_mask, unsigned int ngpios)
++{
++    bitmap_set(valid_mask, 0, ngpios);
++    return 0;
++}
++
++static void lingsi_sgpio_irq_init_valid_mask(struct gpio_chip *gc,
++        unsigned long *valid_mask, unsigned int ngpios)
++{
++    unsigned int i;
++
++    /* input GPIOs are even bits */
++    for (i = 0; i < ngpios; i++) {
++        if (i % 2)
++            clear_bit(i, valid_mask);
++    }
++}
++
++static bool lingsi_sgpio_is_input(unsigned int offset)
++{
++    return !(offset % 2);
++}
++
++static int lingsi_sgpio_get(struct gpio_chip *gc, unsigned int offset)
++{
++    struct lingsi_sgpio *gpio = gpiochip_get_data(gc);
++    const struct lingsi_sgpio_bank *bank = to_bank(offset);
++    unsigned long flags;
++    enum lingsi_sgpio_reg reg;
++    int rc = 0;
++
++    raw_spin_lock_irqsave(&gpio->lock, flags);
++
++    reg = lingsi_sgpio_is_input(offset) ? reg_val : reg_rdata;
++    rc = !!(ioread32(bank_reg(gpio, bank, reg)) & GPIO_BIT(offset));
++
++    raw_spin_unlock_irqrestore(&gpio->lock, flags);
++
++    return rc;
++}
++
++static int sgpio_set_value(struct gpio_chip *gc, unsigned int offset, int val)
++{
++    struct lingsi_sgpio *gpio = gpiochip_get_data(gc);
++    const struct lingsi_sgpio_bank *bank = to_bank(offset);
++    void __iomem *addr_r, *addr_w;
++    u32 reg = 0;
++
++    if (lingsi_sgpio_is_input(offset))
++        return -EINVAL;
++
++    /* Since this is an output, read the cached value from rdata, then
++     * update val. */
++    addr_r = bank_reg(gpio, bank, reg_rdata);
++    addr_w = bank_reg(gpio, bank, reg_val);
++
++    reg = ioread32(addr_r);
++
++    if (val)
++        reg |= GPIO_BIT(offset);
++    else
++        reg &= ~GPIO_BIT(offset);
++
++    iowrite32(reg, addr_w);
++
++    return 0;
++}
++
++static void lingsi_sgpio_set(struct gpio_chip *gc, unsigned int offset, int val)
++{
++    struct lingsi_sgpio *gpio = gpiochip_get_data(gc);
++    unsigned long flags;
++
++    raw_spin_lock_irqsave(&gpio->lock, flags);
++
++    sgpio_set_value(gc, offset, val);
++
++    raw_spin_unlock_irqrestore(&gpio->lock, flags);
++}
++
++static int lingsi_sgpio_dir_in(struct gpio_chip *gc, unsigned int offset)
++{
++    return lingsi_sgpio_is_input(offset) ? 0 : -EINVAL;
++}
++
++static int lingsi_sgpio_dir_out(struct gpio_chip *gc, unsigned int offset, int val)
++{
++    struct lingsi_sgpio *gpio = gpiochip_get_data(gc);
++    unsigned long flags;
++    int rc;
++
++    /* No special action is required for setting the direction; we'll
++     * error-out in sgpio_set_value if this isn't an output GPIO */
++
++    raw_spin_lock_irqsave(&gpio->lock, flags);
++    rc = sgpio_set_value(gc, offset, val);
++    raw_spin_unlock_irqrestore(&gpio->lock, flags);
++
++    return rc;
++}
++
++static int lingsi_sgpio_get_direction(struct gpio_chip *gc, unsigned int offset)
++{
++    return !!lingsi_sgpio_is_input(offset);
++}
++
++static void irqd_to_lingsi_sgpio_data(struct irq_data *d,
++                    struct lingsi_sgpio **gpio,
++                    const struct lingsi_sgpio_bank **bank,
++                    u32 *bit, int *offset)
++{
++    struct lingsi_sgpio *internal;
++
++    *offset = irqd_to_hwirq(d);
++    internal = irq_data_get_irq_chip_data(d);
++    WARN_ON(!internal);
++
++    *gpio = internal;
++    *bank = to_bank(*offset);
++    *bit = GPIO_BIT(*offset);
++}
++
++static void lingsi_sgpio_irq_ack(struct irq_data *d)
++{
++    const struct lingsi_sgpio_bank *bank;
++    struct lingsi_sgpio *gpio;
++    unsigned long flags;
++    void __iomem *status_addr;
++    int offset;
++    u32 bit;
++
++    irqd_to_lingsi_sgpio_data(d, &gpio, &bank, &bit, &offset);
++
++    status_addr = bank_reg(gpio, bank, reg_irq_status);
++
++    raw_spin_lock_irqsave(&gpio->lock, flags);
++
++    iowrite32(bit, status_addr);
++
++    raw_spin_unlock_irqrestore(&gpio->lock, flags);
++}
++
++static void lingsi_sgpio_irq_set_mask(struct irq_data *d, bool set)
++{
++    const struct lingsi_sgpio_bank *bank;
++    struct lingsi_sgpio *gpio;
++    unsigned long flags;
++    u32 reg, bit;
++    void __iomem *addr;
++    int offset;
++
++    irqd_to_lingsi_sgpio_data(d, &gpio, &bank, &bit, &offset);
++    addr = bank_reg(gpio, bank, reg_irq_enable);
++
++    /* Unmasking the IRQ */
++    if (set)
++        gpiochip_enable_irq(&gpio->chip, irqd_to_hwirq(d));
++
++    raw_spin_lock_irqsave(&gpio->lock, flags);
++
++    reg = ioread32(addr);
++    if (set)
++        reg |= bit;
++    else
++        reg &= ~bit;
++
++    iowrite32(reg, addr);
++
++    raw_spin_unlock_irqrestore(&gpio->lock, flags);
++
++    /* Masking the IRQ */
++    if (!set)
++        gpiochip_disable_irq(&gpio->chip, irqd_to_hwirq(d));
++
++
++}
++
++static void lingsi_sgpio_irq_mask(struct irq_data *d)
++{
++    lingsi_sgpio_irq_set_mask(d, false);
++}
++
++static void lingsi_sgpio_irq_unmask(struct irq_data *d)
++{
++    lingsi_sgpio_irq_set_mask(d, true);
++}
++
++static int lingsi_sgpio_set_type(struct irq_data *d, unsigned int type)
++{
++    u32 type0 = 0;
++    u32 type1 = 0;
++    u32 type2 = 0;
++    u32 bit, reg;
++    const struct lingsi_sgpio_bank *bank;
++    irq_flow_handler_t handler;
++    struct lingsi_sgpio *gpio;
++    unsigned long flags;
++    void __iomem *addr;
++    int offset;
++
++    irqd_to_lingsi_sgpio_data(d, &gpio, &bank, &bit, &offset);
++
++    switch (type & IRQ_TYPE_SENSE_MASK) {
++    case IRQ_TYPE_EDGE_BOTH:
++        type2 |= bit;
++        fallthrough;
++    case IRQ_TYPE_EDGE_RISING:
++        type0 |= bit;
++        fallthrough;
++    case IRQ_TYPE_EDGE_FALLING:
++        handler = handle_edge_irq;
++        break;
++    case IRQ_TYPE_LEVEL_HIGH:
++        type0 |= bit;
++        fallthrough;
++    case IRQ_TYPE_LEVEL_LOW:
++        type1 |= bit;
++        handler = handle_level_irq;
++        break;
++    default:
++        return -EINVAL;
++    }
++
++    raw_spin_lock_irqsave(&gpio->lock, flags);
++
++    addr = bank_reg(gpio, bank, reg_irq_type0);
++    reg = ioread32(addr);
++    reg = (reg & ~bit) | type0;
++    iowrite32(reg, addr);
++
++    addr = bank_reg(gpio, bank, reg_irq_type1);
++    reg = ioread32(addr);
++    reg = (reg & ~bit) | type1;
++    iowrite32(reg, addr);
++
++    addr = bank_reg(gpio, bank, reg_irq_type2);
++    reg = ioread32(addr);
++    reg = (reg & ~bit) | type2;
++    iowrite32(reg, addr);
++
++    raw_spin_unlock_irqrestore(&gpio->lock, flags);
++
++    irq_set_handler_locked(d, handler);
++
++    return 0;
++}
++
++static void lingsi_sgpio_irq_handler(struct irq_desc *desc)
++{
++    struct gpio_chip *gc = irq_desc_get_handler_data(desc);
++    struct irq_chip *ic = irq_desc_get_chip(desc);
++    struct lingsi_sgpio *data = gpiochip_get_data(gc);
++    unsigned int i, p;
++    unsigned long reg;
++
++    chained_irq_enter(ic, desc);
++
++    for (i = 0; i < ARRAY_SIZE(lingsi_sgpio_banks); i++) {
++        const struct lingsi_sgpio_bank *bank = &lingsi_sgpio_banks[i];
++
++        reg = ioread32(bank_reg(data, bank, reg_irq_status));
++
++        for_each_set_bit(p, &reg, 32)
++            generic_handle_domain_irq(gc->irq.domain, (i * 32 + p) * 2);
++    }
++
++    chained_irq_exit(ic, desc);
++}
++
++static void lingsi_sgpio_irq_print_chip(struct irq_data *d, struct seq_file *p)
++{
++    const struct lingsi_sgpio_bank *bank;
++    struct lingsi_sgpio *gpio;
++    u32 bit;
++    int offset;
++
++    irqd_to_lingsi_sgpio_data(d, &gpio, &bank, &bit, &offset);
++    seq_printf(p, dev_name(gpio->dev));
++}
++
++static const struct irq_chip lingsi_sgpio_irq_chip = {
++    .irq_ack = lingsi_sgpio_irq_ack,
++    .irq_mask = lingsi_sgpio_irq_mask,
++    .irq_unmask = lingsi_sgpio_irq_unmask,
++    .irq_set_type = lingsi_sgpio_set_type,
++    .irq_print_chip = lingsi_sgpio_irq_print_chip,
++    .flags = IRQCHIP_IMMUTABLE,
++    GPIOCHIP_IRQ_RESOURCE_HELPERS,
++};
++
++static int lingsi_sgpio_setup_irqs(struct lingsi_sgpio *gpio,
++                   struct platform_device *pdev)
++{
++    int rc, i;
++    const struct lingsi_sgpio_bank *bank;
++    struct gpio_irq_chip *irq;
++    rc = platform_get_irq(pdev, 0);
++    if (rc < 0)
++        return rc;
++
++    gpio->irq = rc;
++
++    /* Disable IRQ and clear Interrupt status registers for all SGPIO Pins. */
++    for (i = 0; i < ARRAY_SIZE(lingsi_sgpio_banks); i++) {
++        bank =  &lingsi_sgpio_banks[i];
++        /* disable irq enable bits */
++        iowrite32(0x00000000, bank_reg(gpio, bank, reg_irq_enable));
++        /* clear status bits */
++        iowrite32(0xffffffff, bank_reg(gpio, bank, reg_irq_status));
++    }
++    irq = &gpio->chip.irq;
++    gpio_irq_chip_set_chip(irq, &lingsi_sgpio_irq_chip);
++    irq->init_valid_mask = lingsi_sgpio_irq_init_valid_mask;
++    irq->handler = handle_bad_irq;
++    irq->default_type = IRQ_TYPE_NONE;
++    irq->parent_handler = lingsi_sgpio_irq_handler;
++    irq->parent_handler_data = gpio;
++    irq->parents = &gpio->irq;
++    irq->num_parents = 1;
++    /* Apply default IRQ settings */
++    for (i = 0; i < ARRAY_SIZE(lingsi_sgpio_banks); i++) {
++        bank = &lingsi_sgpio_banks[i];
++        /* set falling or level-low irq */
++        iowrite32(0x00000000, bank_reg(gpio, bank, reg_irq_type0));
++        /* trigger type is edge */
++        iowrite32(0x00000000, bank_reg(gpio, bank, reg_irq_type1));
++        /* single edge trigger */
++        iowrite32(0x00000000, bank_reg(gpio, bank, reg_irq_type2));
++    }
++    return 0;
++}
++
++static int lingsi_sgpio_reset_tolerance(struct gpio_chip *chip,
++                    unsigned int offset, bool enable)
++{
++    struct lingsi_sgpio *gpio = gpiochip_get_data(chip);
++    unsigned long flags;
++    void __iomem *reg;
++    u32 val;
++
++    reg = bank_reg(gpio, to_bank(offset), reg_tolerance);
++
++    raw_spin_lock_irqsave(&gpio->lock, flags);
++
++    val = readl(reg);
++
++    if (enable)
++        val |= GPIO_BIT(offset);
++    else
++        val &= ~GPIO_BIT(offset);
++
++    writel(val, reg);
++
++    raw_spin_unlock_irqrestore(&gpio->lock, flags);
++
++    return 0;
++}
++
++static int lingsi_sgpio_set_config(struct gpio_chip *chip, unsigned int offset,
++                   unsigned long config)
++{
++    unsigned long param = pinconf_to_config_param(config);
++    u32 arg = pinconf_to_config_argument(config);
++
++    if (param == PIN_CONFIG_PERSIST_STATE)
++        return lingsi_sgpio_reset_tolerance(chip, offset, arg);
++
++    return -ENOTSUPP;
++}
++
++static const struct lingsi_sgpio_pdata raptor_sgpiom_pdata = {
++    .pin_mask = GENMASK(10, 5),
++};
++
++static const struct of_device_id lingsi_sgpio_of_table[] = {
++    { .compatible = "lingsi,sgpiom", .data = &raptor_sgpiom_pdata, },
++    {}
++};
++
++MODULE_DEVICE_TABLE(of, lingsi_sgpio_of_table);
++
++static int __init lingsi_sgpio_probe(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    u32 nr_gpios, sgpio_freq, sgpio_clk_div, gpio_cnt_regval, pin_mask;
++    const struct lingsi_sgpio_pdata *pdata;
++    struct lingsi_sgpio *gpio;
++    unsigned long apb_freq;
++    int rc;
++    gpio = devm_kzalloc(&pdev->dev, sizeof(*gpio), GFP_KERNEL);
++    if (!gpio)
++        return -ENOMEM;
++    gpio->base = devm_platform_ioremap_resource(pdev, 0);
++    if (IS_ERR(gpio->base))
++        return PTR_ERR(gpio->base);
++
++    gpio->dev = &pdev->dev;
++    pdata = device_get_match_data(&pdev->dev);
++    if (!pdata)
++        return -EINVAL;
++    pin_mask = pdata->pin_mask;
++
++    rc = device_property_read_u32(&pdev->dev, "ngpios", &nr_gpios);
++    if (rc < 0) {
++        dev_err(&pdev->dev, "Could not read ngpios property\n");
++        return -EINVAL;
++    } else if (nr_gpios % 8) {
++        dev_err(&pdev->dev, "Number of GPIOs not multiple of 8: %d\n",
++            nr_gpios);
++        return -EINVAL;
++    }
++    rc = device_property_read_u32(&pdev->dev, "bus-frequency", &sgpio_freq);
++    if (rc < 0) {
++        dev_err(&pdev->dev, "Could not read bus-frequency property\n");
++        return -EINVAL;
++    }
++    gpio->pclk = devm_clk_get(&pdev->dev, NULL);
++    if (IS_ERR(gpio->pclk)) {
++        dev_err(&pdev->dev, "devm_clk_get failed\n");
++        return PTR_ERR(gpio->pclk);
++    }
++    apb_freq = clk_get_rate(gpio->pclk);
++
++    /*
++     * From the datasheet,
++     *    SGPIO period = 1/PCLK * 2 * (GPIO254[31:16] + 1)
++     *    period = 2 * (GPIO254[31:16] + 1) / PCLK
++     *    frequency = 1 / (2 * (GPIO254[31:16] + 1) / PCLK)
++     *    frequency = PCLK / (2 * (GPIO254[31:16] + 1))
++     *    frequency * 2 * (GPIO254[31:16] + 1) = PCLK
++     *    GPIO254[31:16] = PCLK / (frequency * 2) - 1
++     */
++    if (sgpio_freq == 0)
++        return -EINVAL;
++    sgpio_clk_div = (apb_freq / (sgpio_freq * 2)) - 1;
++
++    if (sgpio_clk_div > (1 << 16) - 1)
++        return -EINVAL;
++    gpio_cnt_regval = ((nr_gpios / 8) << LINGSI_SGPIO_PINS_SHIFT) & pin_mask;
++    iowrite32(FIELD_PREP(LINGSI_SGPIO_CLK_DIV_MASK, sgpio_clk_div) | gpio_cnt_regval |
++          LINGSI_SGPIO_ENABLE, gpio->base + LINGSI_SGPIO_CTRL);
++
++    raw_spin_lock_init(&gpio->lock);
++    gpio->chip.parent = &pdev->dev;
++    gpio->chip.ngpio = nr_gpios * 2;
++    gpio->chip.init_valid_mask = lingsi_sgpio_init_valid_mask;
++    gpio->chip.direction_input = lingsi_sgpio_dir_in;
++    gpio->chip.direction_output = lingsi_sgpio_dir_out;
++    gpio->chip.get_direction = lingsi_sgpio_get_direction;
++    gpio->chip.request = NULL;
++    gpio->chip.free = NULL;
++    gpio->chip.get = lingsi_sgpio_get;
++    gpio->chip.set = lingsi_sgpio_set;
++    gpio->chip.set_config = lingsi_sgpio_set_config;
++    gpio->chip.label = dev_name(&pdev->dev);
++    gpio->chip.base = -1;
++    lingsi_sgpio_setup_irqs(gpio, pdev);
++
++    rc = devm_gpiochip_add_data(&pdev->dev, &gpio->chip, gpio);
++    if (rc < 0)
++        return rc;
++
++    dev_info(dev, "initialized\n");
++    return 0;
++}
++
++static struct platform_driver lingsi_sgpio_driver = {
++    .driver = {
++        .name = KBUILD_MODNAME,
++        .of_match_table = lingsi_sgpio_of_table,
++    },
++};
++
++module_platform_driver_probe(lingsi_sgpio_driver, lingsi_sgpio_probe);
++MODULE_DESCRIPTION("Aspeed Serial GPIO Driver");
+diff --git a/drivers/gpio/gpio-lingsi.c b/drivers/gpio/gpio-lingsi.c
+new file mode 100644
+index 000000000000..35783ee02f2a
+--- /dev/null
++++ b/drivers/gpio/gpio-lingsi.c
+@@ -0,0 +1,347 @@
++// SPDX-License-Identifier: GPL-2.0
++//
++// Copyright (C) 2024 linkedsemi
++//   Author: Hunter Liu <htliu@linkedsemi.com>
++
++#include <linux/bits.h>
++#include <linux/gpio/driver.h>
++#include <linux/irq.h>
++#include <linux/irqdomain.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/of_irq.h>
++#include <linux/platform_device.h>
++#include <linux/spinlock.h>
++
++#define LINGSI_GPIO_IRQ_MAX_NUM       128
++#define LINGSI_GPIO_REG_SIZE_PER_BANK 0x20
++#define LINGSI_GPIO_PINS_PER_BANK     16
++
++#define LINGSI_GPIO_PORT(bank, line) \
++    ((LINGSI_GPIO_PINS_PER_BANK) * (bank) + (line))
++
++#define LINGSI_GPIO_LVS_LOCK 0x00
++#define LINGSI_GPIO_DOT      0x04
++#define LINGSI_GPIO_PD_PU    0x08
++#define LINGSI_GPIO_IEN_OD   0x0c
++#define LINGSI_GPIO_DS       0x10
++#define LINGSI_GPIO_AE       0x14
++#define LINGSI_GPIO_OE_FIR   0x18
++#define LINGSI_GPIO_HSS_DIN  0x1c
++
++struct lingsi_gpio_priv {
++    struct gpio_chip chip;
++    struct irq_chip irq_chip;
++    struct irq_domain *domain;
++    void __iomem *base;
++    spinlock_t lock;
++    u32 saved_vals[];
++};
++
++static inline uint32_t lingsi_gpio_pin(uint32_t gpio)
++{
++    return gpio % LINGSI_GPIO_PINS_PER_BANK;
++}
++
++static inline uint32_t lingsi_gpio_bank(uint32_t gpio)
++{
++    return gpio / LINGSI_GPIO_PINS_PER_BANK;
++}
++
++static inline uint32_t lingsi_gpio_bank_base(uint32_t bank)
++{
++    return bank * LINGSI_GPIO_REG_SIZE_PER_BANK;
++}
++
++static int lingsi_gpio_get_direction(struct gpio_chip *chip,
++                                     unsigned int offset)
++{
++    struct lingsi_gpio_priv *priv = gpiochip_get_data(chip);
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++    uint32_t reg;
++
++    reg = ioread32(priv->base + reg_offt + LINGSI_GPIO_OE_FIR);
++    if (reg & BIT(pin + LINGSI_GPIO_PINS_PER_BANK))
++        return GPIO_LINE_DIRECTION_OUT;
++
++    return GPIO_LINE_DIRECTION_IN;
++}
++
++static int lingsi_gpio_direction_input(struct gpio_chip *chip,
++                                       unsigned int offset)
++{
++    struct lingsi_gpio_priv *priv = gpiochip_get_data(chip);
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++    uint32_t reg;
++
++    reg = ioread32(priv->base + reg_offt + LINGSI_GPIO_OE_FIR);
++    reg &= ~(BIT(pin + LINGSI_GPIO_PINS_PER_BANK));
++    iowrite32(reg, priv->base + reg_offt + LINGSI_GPIO_OE_FIR);
++
++    reg = ioread32(priv->base + reg_offt + LINGSI_GPIO_IEN_OD);
++    reg &= ~(BIT(pin + LINGSI_GPIO_PINS_PER_BANK));
++    iowrite32(reg, priv->base + reg_offt + LINGSI_GPIO_IEN_OD);
++
++    return 0;
++}
++
++static int lingsi_gpio_direction_output(struct gpio_chip *chip,
++                                        unsigned int offset,
++                                        int val)
++{
++    struct lingsi_gpio_priv *priv = gpiochip_get_data(chip);
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++    uint32_t reg;
++
++    reg = ioread32(priv->base + reg_offt + LINGSI_GPIO_IEN_OD);
++    reg |= BIT(pin + LINGSI_GPIO_PINS_PER_BANK);
++    iowrite32(reg, priv->base + reg_offt + LINGSI_GPIO_IEN_OD);
++
++    reg = ioread32(priv->base + reg_offt + LINGSI_GPIO_OE_FIR);
++    reg |= BIT(pin + LINGSI_GPIO_PINS_PER_BANK);
++    iowrite32(reg, priv->base + reg_offt + LINGSI_GPIO_OE_FIR);
++
++    if (val) {
++        reg = BIT(pin);
++    } else {
++        reg = BIT(pin + LINGSI_GPIO_PINS_PER_BANK);
++    }
++    iowrite32(reg, priv->base + reg_offt + LINGSI_GPIO_DOT);
++
++    return 0;
++}
++
++static int lingsi_gpio_get(struct gpio_chip *chip, unsigned int offset)
++{
++    struct lingsi_gpio_priv *priv = gpiochip_get_data(chip);
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++    uint32_t reg;
++
++    reg = ioread32(priv->base + reg_offt + LINGSI_GPIO_HSS_DIN) & BIT(pin);
++    return !!reg;
++}
++
++static void lingsi_gpio_set(struct gpio_chip *chip,
++                            unsigned int offset,
++                            int val)
++{
++    struct lingsi_gpio_priv *priv = gpiochip_get_data(chip);
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++
++    if (val) {
++        iowrite32(BIT(pin), priv->base + reg_offt + LINGSI_GPIO_DOT);
++    } else {
++        iowrite32(BIT(pin + LINGSI_GPIO_PINS_PER_BANK), priv->base + reg_offt + LINGSI_GPIO_DOT);
++    }
++}
++
++static int lingsi_gpio_to_irq(struct gpio_chip *chip, unsigned int offset)
++{
++    struct irq_fwspec fwspec;
++
++    if (offset > LINGSI_GPIO_IRQ_MAX_NUM)
++        return -ENXIO;
++
++    fwspec.fwnode = of_node_to_fwnode(chip->parent->of_node);
++    fwspec.param_count = 2;
++    fwspec.param[0] = offset;
++    /*
++     * IRQ_TYPE_NONE is rejected by the parent irq domain. Set LEVEL_HIGH
++     * temporarily. Anyway, ->irq_set_type() will override it later.
++     */
++    fwspec.param[1] = IRQ_TYPE_LEVEL_HIGH;
++
++    return irq_create_fwspec_mapping(&fwspec);
++}
++
++static int lingsi_gpio_irq_domain_translate(struct irq_domain *domain,
++                                            struct irq_fwspec *fwspec,
++                                            unsigned long *out_hwirq,
++                                            unsigned int *out_type)
++{
++    if (WARN_ON(fwspec->param_count < 2))
++        return -EINVAL;
++
++    *out_hwirq = fwspec->param[0];
++    *out_type = fwspec->param[1] & IRQ_TYPE_SENSE_MASK;
++
++    return 0;
++}
++
++static int lingsi_gpio_irq_domain_alloc(struct irq_domain *domain,
++                                        unsigned int virq,
++                                        unsigned int nr_irqs,
++                                        void *arg)
++{
++    struct lingsi_gpio_priv *priv = domain->host_data;
++    struct irq_fwspec *fwspec = arg;
++    struct irq_fwspec parent_fwspec;
++    irq_hw_number_t hwirq;
++    unsigned int type;
++    int ret;
++
++    if (WARN_ON(nr_irqs != 1))
++        return -EINVAL;
++
++    ret = lingsi_gpio_irq_domain_translate(domain, arg, &hwirq, &type);
++    if (ret)
++        return ret;
++
++    /* parent is lingsi exti_intc */
++    parent_fwspec.fwnode = domain->parent->fwnode;
++    parent_fwspec.param_count = 2;
++    parent_fwspec.param[0] = fwspec->param[0];
++    parent_fwspec.param[1] = fwspec->param[1];
++
++    ret = irq_domain_set_hwirq_and_chip(domain, virq, fwspec->param[0], &priv->irq_chip, priv);
++    if (ret)
++        return ret;
++
++    return irq_domain_alloc_irqs_parent(domain, virq, nr_irqs, &parent_fwspec);
++}
++
++static int lingsi_gpio_irq_domain_activate(struct irq_domain *domain,
++                                           struct irq_data *data,
++                                           bool early)
++{
++    struct lingsi_gpio_priv *priv = domain->host_data;
++    struct gpio_chip *chip = &priv->chip;
++
++    return gpiochip_lock_as_irq(chip, irqd_to_hwirq(data));
++}
++
++static void lingsi_gpio_irq_domain_deactivate(struct irq_domain *domain,
++                                              struct irq_data *data)
++{
++    struct lingsi_gpio_priv *priv = domain->host_data;
++    struct gpio_chip *chip = &priv->chip;
++
++    gpiochip_unlock_as_irq(chip, irqd_to_hwirq(data));
++}
++
++static const struct irq_domain_ops lingsi_gpio_irq_domain_ops = {
++    .alloc = lingsi_gpio_irq_domain_alloc,
++    .free = irq_domain_free_irqs_common,
++    .activate = lingsi_gpio_irq_domain_activate,
++    .deactivate = lingsi_gpio_irq_domain_deactivate,
++    .translate = lingsi_gpio_irq_domain_translate,
++};
++
++static unsigned int lingsi_gpio_get_nbanks(unsigned int ngpio)
++{
++    return DIV_ROUND_UP(ngpio, LINGSI_GPIO_PINS_PER_BANK);
++}
++
++static int lingsi_gpio_probe(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    struct device_node *parent_np;
++    struct irq_domain *parent_domain;
++    struct lingsi_gpio_priv *priv;
++    struct gpio_chip *chip;
++    struct irq_chip *irq_chip;
++    unsigned int nregs;
++    u32 ngpios;
++    int ret;
++
++    parent_np = of_irq_find_parent(dev->of_node);
++    if (!parent_np)
++        return -ENXIO;
++
++    parent_domain = irq_find_host(parent_np);
++    of_node_put(parent_np);
++    if (!parent_domain)
++        return -EPROBE_DEFER;
++
++    ret = of_property_read_u32(dev->of_node, "ngpios", &ngpios);
++    if (ret)
++        return ret;
++
++    nregs = lingsi_gpio_get_nbanks(ngpios);
++    priv = devm_kzalloc(dev, struct_size(priv, saved_vals, nregs), GFP_KERNEL);
++    if (!priv)
++        return -ENOMEM;
++
++    priv->base = devm_platform_ioremap_resource(pdev, 0);
++    if (IS_ERR(priv->base))
++        return PTR_ERR(priv->base);
++
++    spin_lock_init(&priv->lock);
++
++    chip = &priv->chip;
++    chip->label = dev_name(dev);
++    chip->parent = dev;
++    chip->request = gpiochip_generic_request;
++    chip->free = gpiochip_generic_free;
++    chip->get_direction = lingsi_gpio_get_direction;
++    chip->direction_input = lingsi_gpio_direction_input;
++    chip->direction_output = lingsi_gpio_direction_output;
++    chip->get = lingsi_gpio_get;
++    chip->set = lingsi_gpio_set;
++    chip->to_irq = lingsi_gpio_to_irq;
++    chip->base = -1;
++    chip->ngpio = ngpios;
++
++    irq_chip = &priv->irq_chip;
++    irq_chip->name = dev_name(dev);
++    irq_chip->irq_eoi = irq_chip_eoi_parent;
++    irq_chip->irq_ack = irq_chip_ack_parent,
++    irq_chip->irq_mask = irq_chip_mask_parent;
++    irq_chip->irq_unmask = irq_chip_unmask_parent;
++    irq_chip->irq_set_affinity = irq_chip_set_affinity_parent;
++    irq_chip->irq_set_type = irq_chip_set_type_parent;
++
++    ret = devm_gpiochip_add_data(dev, chip, priv);
++    if (ret)
++        return ret;
++
++    priv->domain = irq_domain_create_hierarchy(
++        parent_domain, 0, LINGSI_GPIO_IRQ_MAX_NUM, of_node_to_fwnode(dev->of_node), &lingsi_gpio_irq_domain_ops, priv);
++    if (!priv->domain)
++        return -ENOMEM;
++
++    platform_set_drvdata(pdev, priv);
++
++    dev_info(dev, "initialized\n");
++    return 0;
++}
++
++static int lingsi_gpio_remove(struct platform_device *pdev)
++{
++    struct lingsi_gpio_priv *priv = platform_get_drvdata(pdev);
++
++    irq_domain_remove(priv->domain);
++
++    return 0;
++}
++
++static const struct of_device_id lingsi_gpio_match[] = {
++    { .compatible = "lingsi,gpio" },
++    { /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, lingsi_gpio_match);
++
++static struct platform_driver lingsi_gpio_driver = {
++    .probe = lingsi_gpio_probe,
++    .remove = lingsi_gpio_remove,
++    .driver = {
++        .name = "lingsi-gpio",
++        .of_match_table = lingsi_gpio_match,
++    },
++};
++module_platform_driver(lingsi_gpio_driver);
++
++MODULE_AUTHOR("Hunter Liu <htliu@linkedsemi.com>");
++MODULE_DESCRIPTION("linkedsemi GPIO driver");
++MODULE_LICENSE("GPL v2");
+diff --git a/drivers/media/platform/Kconfig b/drivers/media/platform/Kconfig
+index ee579916f874..d6134c1bb913 100644
+--- a/drivers/media/platform/Kconfig
++++ b/drivers/media/platform/Kconfig
+@@ -85,5 +85,6 @@ source "drivers/media/platform/ti/Kconfig"
+ source "drivers/media/platform/verisilicon/Kconfig"
+ source "drivers/media/platform/via/Kconfig"
+ source "drivers/media/platform/xilinx/Kconfig"
++source "drivers/media/platform/lingsi/Kconfig"
+ 
+ endif # MEDIA_PLATFORM_DRIVERS
+diff --git a/drivers/media/platform/Makefile b/drivers/media/platform/Makefile
+index 5453bb868e67..acfd0a39c62b 100644
+--- a/drivers/media/platform/Makefile
++++ b/drivers/media/platform/Makefile
+@@ -28,6 +28,7 @@ obj-y += ti/
+ obj-y += verisilicon/
+ obj-y += via/
+ obj-y += xilinx/
++obj-y += lingsi/
+ 
+ # Please place here only ancillary drivers that aren't SoC-specific
+ # Please keep it alphabetically sorted by Kconfig name
+diff --git a/drivers/media/platform/lingsi/Kconfig b/drivers/media/platform/lingsi/Kconfig
+new file mode 100644
+index 000000000000..9fccc9f9f993
+--- /dev/null
++++ b/drivers/media/platform/lingsi/Kconfig
+@@ -0,0 +1,11 @@
++# SPDX-License-Identifier: GPL-2.0-only
++
++comment "LS media platform drivers"
++
++config VIDEO_LINGSI
++    bool "LINGSI Video Engine driver"
++    depends on V4L_PLATFORM_DRIVERS
++    depends on VIDEO_DEV
++    select VIDEOBUF2_DMA_CONTIG
++    help
++      TBD
+diff --git a/drivers/media/platform/lingsi/Makefile b/drivers/media/platform/lingsi/Makefile
+new file mode 100644
+index 000000000000..b48814457bdc
+--- /dev/null
++++ b/drivers/media/platform/lingsi/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0-only
++obj-$(CONFIG_VIDEO_LINGSI) += lingsi-video.o
+diff --git a/drivers/media/platform/lingsi/lingsi-video.c b/drivers/media/platform/lingsi/lingsi-video.c
+new file mode 100644
+index 000000000000..937fa75ee42d
+--- /dev/null
++++ b/drivers/media/platform/lingsi/lingsi-video.c
+@@ -0,0 +1,1002 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++// Copyright 2020 IBM Corp.
++// Copyright (c) 2019-2020 Intel Corporation
++
++#include <linux/atomic.h>
++#include <linux/bitfield.h>
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/dma-mapping.h>
++#include <linux/interrupt.h>
++#include <linux/jiffies.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/of_irq.h>
++#include <linux/of_reserved_mem.h>
++#include <linux/platform_device.h>
++#include <linux/sched.h>
++#include <linux/spinlock.h>
++#include <linux/string.h>
++#include <linux/v4l2-controls.h>
++#include <linux/videodev2.h>
++#include <linux/wait.h>
++#include <linux/workqueue.h>
++#include <media/v4l2-ctrls.h>
++#include <media/v4l2-dev.h>
++#include <media/v4l2-device.h>
++#include <media/v4l2-dv-timings.h>
++#include <media/v4l2-event.h>
++#include <media/v4l2-ioctl.h>
++#include <linux/dmaengine.h>
++#include <media/videobuf2-v4l2.h>
++#include <media/videobuf2-dma-contig.h>
++#include <linux/ktime.h>
++
++#define DBG(format,...)\
++        printk(KERN_CRIT "info:%s:%d: "format"\n",__func__,__LINE__,##__VA_ARGS__);
++#define DBG_LINE DBG("")
++
++#define IMAGE_SIZE 1920000
++#define PIX_BPP 4
++
++#define DEVICE_NAME            "lingsi-video"
++
++#define MAX_FRAME_RATE        60
++#define MAX_HEIGHT            1200
++#define MAX_WIDTH            1920
++#define MIN_HEIGHT            480
++#define MIN_WIDTH            640
++
++#define HEIGHT 600
++#define WIDTH  800
++
++#define STOP_TIMEOUT            msecs_to_jiffies(1000)
++
++#define LINGSI_DMA_MAX_DATA_ITEMS    0xffff
++/*
++ * Valid transfer starts from @0 to @0xFFFE leading to unaligned scatter
++ * gather at boundary. Thus it's safer to round down this value on FIFO
++ * size (16 Bytes)
++ */
++#define LINGSI_DMA_ALIGNED_MAX_DATA_ITEMS    \
++    ALIGN_DOWN(LINGSI_DMA_MAX_DATA_ITEMS, 16)
++
++enum {
++    VIDEO_MODE_DETECT_DONE,
++    VIDEO_RES_CHANGE,
++    VIDEO_RES_DETECT,
++    VIDEO_STREAMING,
++    VIDEO_FRAME_INPRG,
++    VIDEO_STOPPED,
++    VIDEO_CLOCKS_ON,
++};
++
++struct lingsi_video_addr {
++    unsigned int size;
++    dma_addr_t dma;
++    void *virt;
++};
++
++struct lingsi_video_buffer {
++    struct vb2_v4l2_buffer vb;
++    struct list_head link;
++    dma_addr_t        paddr;
++    size_t            size;
++};
++
++#define to_lingsi_video_buffer(x) \
++    container_of((x), struct lingsi_video_buffer, vb)
++
++struct lingsi_video {
++    struct clk *eclk;
++    struct clk *vclk;
++
++    struct device *dev;
++    struct v4l2_device v4l2_dev;
++    struct v4l2_pix_format pix_fmt;
++    struct v4l2_bt_timings active_timings;
++    struct v4l2_bt_timings detected_timings;
++    u32 v4l2_input_status;
++    struct vb2_queue queue;
++    struct video_device vdev;
++    struct mutex video_lock;    /* v4l2 and videobuf2 lock */
++
++    wait_queue_head_t wait;
++    spinlock_t lock;        /* buffer list lock */
++
++    struct list_head buffers;
++    unsigned long flags;
++    unsigned int sequence;
++
++    unsigned int max_compressed_size;
++    struct lingsi_video_addr srcs[2];
++    struct lingsi_video_addr jpeg;
++
++    // bool yuv420;
++    unsigned int frame_rate;
++    // unsigned int jpeg_quality;
++
++    unsigned int frame_bottom;
++    unsigned int frame_left;
++    unsigned int frame_right;
++    unsigned int frame_top;
++
++
++    /* Protects the access of variables shared within the interrupt */
++    struct v4l2_format        fmt;
++
++    /* Protect this data structure */
++    struct dma_chan            *dma_chan;
++    dma_cookie_t            dma_cookie;
++    int                errors_count;
++    int                overrun_count;
++    int                buffers_count;
++
++    /* Ensure DMA operations atomicity */
++    struct mutex            dma_lock;
++    struct dma_async_tx_descriptor *tx;
++    unsigned long long vram;
++    dma_cookie_t cookie;
++};
++
++#define to_lingsi_video(x) container_of((x), struct lingsi_video, v4l2_dev)
++
++static const struct v4l2_dv_timings_cap lingsi_video_timings_cap = {
++    .type = V4L2_DV_BT_656_1120,
++    .bt = {
++        .min_width = MIN_WIDTH,
++        .max_width = MAX_WIDTH,
++        .min_height = MIN_HEIGHT,
++        .max_height = MAX_HEIGHT,
++        .min_pixelclock = 6574080, /* 640 x 480 x 24Hz */
++        .max_pixelclock = 138240000, /* 1920 x 1200 x 60Hz */
++        .standards = V4L2_DV_BT_STD_CEA861 | V4L2_DV_BT_STD_DMT |
++            V4L2_DV_BT_STD_CVT | V4L2_DV_BT_STD_GTF,
++        .capabilities = V4L2_DV_BT_CAP_PROGRESSIVE |
++            V4L2_DV_BT_CAP_REDUCED_BLANKING |
++            V4L2_DV_BT_CAP_CUSTOM,
++    },
++};
++
++
++static int lingsi_start_capture(struct lingsi_video *video, struct lingsi_video_buffer *buf);
++static void lingsi_dma_callback(void *param);
++
++static void lingsi_video_buffer_done(struct lingsi_video *video,
++                 struct lingsi_video_buffer *buf,
++                 size_t bytesused,
++                 int err)
++{
++    struct vb2_v4l2_buffer *vbuf;
++
++    if (!buf)
++        return;
++
++    list_del_init(&buf->link);
++    vbuf = &buf->vb;
++    vbuf->sequence = video->sequence++;
++    vbuf->field = V4L2_FIELD_NONE;
++    vbuf->vb2_buf.timestamp = ktime_get_ns();
++    vb2_set_plane_payload(&vbuf->vb2_buf, 0, bytesused);
++    vb2_buffer_done(&vbuf->vb2_buf,
++            err ? VB2_BUF_STATE_ERROR : VB2_BUF_STATE_DONE);
++    dev_dbg(video->dev, "buffer[%d] done seq=%d, bytesused=%zu\n",
++        vbuf->vb2_buf.index, vbuf->sequence, bytesused);
++    video->buffers_count++;
++}
++
++
++static int lingsi_start_dma(struct lingsi_video *video, struct lingsi_video_buffer *buf)
++{
++    if(buf == NULL) {
++        DBG("dma NULL buf")
++        return -EINVAL;
++    }
++
++    video->tx = video->dma_chan->device->device_prep_dma_memcpy(video->dma_chan,
++                buf->paddr, video->vram, buf->size, DMA_CTRL_ACK | DMA_PREP_INTERRUPT);
++    if (!video->tx) {
++        printk(KERN_INFO "Failed to prepare DMA memcpy");
++    }
++    video->tx->callback = lingsi_dma_callback;
++    video->tx->callback_param = video;
++    video->cookie = video->tx->tx_submit(video->tx);
++
++    if (dma_submit_error(video->cookie)) {
++        printk("DMA tx submit failed");
++    }
++
++    mutex_unlock(&video->dma_lock);
++
++    dma_async_issue_pending(video->dma_chan);
++
++    return 0;
++}
++
++static int lingsi_start_capture(struct lingsi_video *video, struct lingsi_video_buffer *buf)
++{
++    int ret;
++
++    if (!buf)
++        return -EINVAL;
++
++    ret = lingsi_start_dma(video, buf);
++    if (ret) {
++        video->errors_count++;
++        return ret;
++    }
++    return 0;
++}
++
++static int lingsi_video_start_frame(struct lingsi_video *video)
++{
++    unsigned long flags;
++    struct lingsi_video_buffer *buf;
++    int ret;
++
++    if (video->v4l2_input_status) {
++        dev_dbg(video->dev, "No signal; don't start frame\n");
++        return 0;
++    }
++
++    spin_lock_irqsave(&video->lock, flags);
++    buf = list_first_entry_or_null(&video->buffers, struct lingsi_video_buffer, link);
++    if (!buf) {
++        spin_unlock_irqrestore(&video->lock, flags);
++        dev_dbg(video->dev, "No buffers; don't start frame\n");
++        return -EPROTO;
++    }
++
++    set_bit(VIDEO_FRAME_INPRG, &video->flags);
++
++    /******** virtural memcpy ...********/
++    // addr = vb2_plane_vaddr(&buf->vb.vb2_buf, 0);
++    // memcpy(addr, video->base, IMAGE_SIZE);
++
++    /******** phy memcpy ...********/
++    buf->paddr = vb2_dma_contig_plane_dma_addr(&buf->vb.vb2_buf, 0);
++    buf->size = vb2_plane_size(&buf->vb.vb2_buf, 0);
++
++    spin_unlock_irqrestore(&video->lock, flags);
++    ret = lingsi_start_capture(video, buf);
++    if (ret) {
++        dev_err(video->dev, "%s: Start streaming failed, cannot start capture\n",
++            __func__);
++    }
++
++    return 0;
++}
++
++static void lingsi_dma_callback(void *param)
++{
++    struct lingsi_video *video = (struct lingsi_video *)param;
++    struct dma_tx_state state;
++    enum dma_status status;
++    struct lingsi_video_buffer *buf;
++
++    /* Check DMA status */
++    status = dmaengine_tx_status(video->dma_chan, video->dma_cookie, &state);
++
++    switch (status) {
++    case DMA_IN_PROGRESS:
++        dev_dbg(video->dev, "%s: Received DMA_IN_PROGRESS\n", __func__);
++        break;
++    case DMA_PAUSED:
++        dev_err(video->dev, "%s: Received DMA_PAUSED\n", __func__);
++        break;
++    case DMA_ERROR:
++        dev_err(video->dev, "%s: Received DMA_ERROR\n", __func__);
++
++        /* Return buffer to V4L2 in error state */
++        lingsi_video_buffer_done(video, buf, 0, -EIO);
++        break;
++    case DMA_COMPLETE:
++        dev_dbg(video->dev, "%s: Received DMA_COMPLETE\n", __func__);
++        spin_lock(&video->lock);
++        clear_bit(VIDEO_FRAME_INPRG, &video->flags);
++        buf = list_first_entry_or_null(&video->buffers,
++                            struct lingsi_video_buffer,
++                            link);
++        if (buf) {
++            vb2_set_plane_payload(&buf->vb.vb2_buf, 0, IMAGE_SIZE);
++
++            if (!list_is_last(&buf->link, &video->buffers)) {
++                buf->vb.vb2_buf.timestamp = ktime_get_ns();
++                buf->vb.sequence = video->sequence++;
++                buf->vb.field = V4L2_FIELD_NONE;
++                vb2_buffer_done(&buf->vb.vb2_buf,
++                        VB2_BUF_STATE_DONE);
++                list_del(&buf->link);
++            }
++        }
++        spin_unlock(&video->lock);
++
++        if (test_bit(VIDEO_STREAMING, &video->flags) && buf)
++            lingsi_video_start_frame(video);
++        return;
++    default:
++        dev_err(video->dev, "%s: Received unknown status\n", __func__);
++        break;
++    }
++}
++
++
++static void lingsi_video_off(struct lingsi_video *video)
++{
++    if (!test_bit(VIDEO_CLOCKS_ON, &video->flags))
++        return;
++
++    clear_bit(VIDEO_CLOCKS_ON, &video->flags);
++}
++
++static void lingsi_video_on(struct lingsi_video *video)
++{
++    if (test_bit(VIDEO_CLOCKS_ON, &video->flags))
++        return;
++
++    set_bit(VIDEO_CLOCKS_ON, &video->flags);
++}
++
++static void lingsi_video_bufs_done(struct lingsi_video *video, enum vb2_buffer_state state)
++{
++    unsigned long flags;
++    struct lingsi_video_buffer *buf;
++
++    spin_lock_irqsave(&video->lock, flags);
++    list_for_each_entry(buf, &video->buffers, link)
++        vb2_buffer_done(&buf->vb.vb2_buf, state);
++    INIT_LIST_HEAD(&video->buffers);
++    spin_unlock_irqrestore(&video->lock, flags);
++}
++
++#define res_check(v) test_and_clear_bit(VIDEO_MODE_DETECT_DONE, &(v)->flags)
++
++static void lingsi_video_get_resolution(struct lingsi_video *video)
++{
++    struct v4l2_bt_timings *det = &video->detected_timings;
++
++    det->height = HEIGHT;
++    det->width = WIDTH;
++    video->v4l2_input_status = 0;
++    dev_dbg(video->dev, "Got resolution: %dx%d\n", det->width, det->height);
++    return;
++}
++
++static void lingsi_video_set_resolution(struct lingsi_video *video)
++{
++    return;
++}
++
++static void lingsi_video_start(struct lingsi_video *video)
++{
++    lingsi_video_on(video);
++
++    /* Resolution set to 640x480 if no signal found */
++    lingsi_video_get_resolution(video);
++
++    /* Set timings since the device is being opened for the first time */
++    video->active_timings = video->detected_timings;
++    lingsi_video_set_resolution(video);
++
++    video->pix_fmt.width = WIDTH;
++    video->pix_fmt.height = HEIGHT;
++    video->pix_fmt.sizeimage = IMAGE_SIZE;
++    video->pix_fmt.field = V4L2_FIELD_NONE;
++    video->pix_fmt.colorspace = V4L2_COLORSPACE_RAW;
++    video->pix_fmt.bytesperline = video->pix_fmt.width * PIX_BPP;
++}
++
++static void lingsi_video_stop(struct lingsi_video *video)
++{
++    set_bit(VIDEO_STOPPED, &video->flags);
++
++    lingsi_video_off(video);
++
++    video->v4l2_input_status = V4L2_IN_ST_NO_SIGNAL;
++    video->flags = 0;
++}
++
++static int lingsi_video_querycap(struct file *file, void *fh,
++                 struct v4l2_capability *cap)
++{
++    strscpy(cap->driver, DEVICE_NAME, sizeof(cap->driver));
++    strscpy(cap->card, "LINGSI Video Engine", sizeof(cap->card));
++    snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
++         DEVICE_NAME);
++
++    return 0;
++}
++
++static int lingsi_video_enum_format(struct file *file, void *fh, struct v4l2_fmtdesc *f)
++{
++    if (f->index) {
++        return -EINVAL;
++    }
++
++    f->pixelformat = V4L2_PIX_FMT_XRGB32;
++
++    return 0;
++}
++
++static int lingsi_video_get_format(struct file *file, void *fh, struct v4l2_format *f)
++{
++    struct lingsi_video *video = video_drvdata(file);
++    f->fmt.pix = video->pix_fmt;
++
++    return 0;
++}
++
++static int lingsi_video_enum_input(struct file *file, void *fh, struct v4l2_input *inp)
++{
++    struct lingsi_video *video = video_drvdata(file);
++    if (inp->index) {
++        return -EINVAL;
++    }
++
++    strscpy(inp->name, "Host VGA capture", sizeof(inp->name));
++    inp->type = V4L2_INPUT_TYPE_CAMERA;
++    inp->capabilities = V4L2_IN_CAP_DV_TIMINGS;
++    inp->status = video->v4l2_input_status;
++
++    return 0;
++}
++
++static int lingsi_video_get_input(struct file *file, void *fh, unsigned int *i)
++{
++    *i = 0;
++
++    return 0;
++}
++
++static int lingsi_video_set_input(struct file *file, void *fh, unsigned int i)
++{
++    if (i) {
++        return -EINVAL;
++    }
++
++    return 0;
++}
++
++static int lingsi_video_get_parm(struct file *file, void *fh,
++                 struct v4l2_streamparm *a)
++{
++    struct lingsi_video *video = video_drvdata(file);
++
++    a->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
++    a->parm.capture.readbuffers = 3;
++    a->parm.capture.timeperframe.numerator = 1;
++    if (!video->frame_rate)
++        a->parm.capture.timeperframe.denominator = MAX_FRAME_RATE;
++    else
++        a->parm.capture.timeperframe.denominator = video->frame_rate;
++
++    return 0;
++}
++
++static int lingsi_video_set_parm(struct file *file, void *fh,
++                 struct v4l2_streamparm *a)
++{
++    unsigned int frame_rate = 0;
++    struct lingsi_video *video = video_drvdata(file);
++
++    a->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
++    a->parm.capture.readbuffers = 3;
++
++    if (a->parm.capture.timeperframe.numerator)
++        frame_rate = a->parm.capture.timeperframe.denominator /
++            a->parm.capture.timeperframe.numerator;
++
++    if (!frame_rate || frame_rate > MAX_FRAME_RATE) {
++        frame_rate = 0;
++        a->parm.capture.timeperframe.denominator = MAX_FRAME_RATE;
++        a->parm.capture.timeperframe.numerator = 1;
++    }
++
++    if (video->frame_rate != frame_rate) {
++        video->frame_rate = frame_rate;
++        // lingsi_video_update(video, VE_CTRL, VE_CTRL_FRC, FIELD_PREP(VE_CTRL_FRC, frame_rate));
++    }
++
++    return 0;
++}
++
++static int lingsi_video_enum_framesizes(struct file *file, void *fh,
++                    struct v4l2_frmsizeenum *fsize)
++{
++    struct lingsi_video *video = video_drvdata(file);
++
++    if (fsize->index) {
++        return -EINVAL;
++    }
++
++    if (fsize->pixel_format != V4L2_PIX_FMT_XRGB32) {
++        return -EINVAL;
++    }
++
++    fsize->discrete.width = video->pix_fmt.width;
++    fsize->discrete.height = video->pix_fmt.height;
++    fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
++
++    return 0;
++}
++
++static int lingsi_video_enum_frameintervals(struct file *file, void *fh, struct v4l2_frmivalenum *fival)
++{
++    struct lingsi_video *video = video_drvdata(file);
++
++    if (fival->index) {
++        return -EINVAL;
++    }
++
++    if (fival->width != video->detected_timings.width ||
++        fival->height != video->detected_timings.height) {
++        return -EINVAL;
++    }
++
++    if (fival->pixel_format != V4L2_PIX_FMT_XRGB32) {
++        return -EINVAL;
++    }
++
++    fival->type = V4L2_FRMIVAL_TYPE_CONTINUOUS;
++
++    fival->stepwise.min.denominator = MAX_FRAME_RATE;
++    fival->stepwise.min.numerator = 1;
++    fival->stepwise.max.denominator = 1;
++    fival->stepwise.max.numerator = 1;
++    fival->stepwise.step = fival->stepwise.max;
++
++    return 0;
++}
++
++static int lingsi_video_set_dv_timings(struct file *file, void *fh,    struct v4l2_dv_timings *timings)
++{
++    struct lingsi_video *video = video_drvdata(file);
++
++    if (timings->bt.width == video->active_timings.width &&
++        timings->bt.height == video->active_timings.height)
++        return 0;
++
++    if (vb2_is_busy(&video->queue))
++        return -EBUSY;
++
++    video->active_timings = timings->bt;
++
++    lingsi_video_set_resolution(video);
++
++    video->pix_fmt.width = WIDTH;
++    video->pix_fmt.height = HEIGHT;
++    video->pix_fmt.sizeimage = IMAGE_SIZE;
++
++    timings->type = V4L2_DV_BT_656_1120;
++
++    return 0;
++}
++
++static int lingsi_video_get_dv_timings(struct file *file, void *fh,    struct v4l2_dv_timings *timings)
++{
++    struct lingsi_video *video = video_drvdata(file);
++
++    timings->type = V4L2_DV_BT_656_1120;
++    timings->bt = video->active_timings;
++
++    return 0;
++}
++
++static int lingsi_video_query_dv_timings(struct file *file, void *fh,
++                     struct v4l2_dv_timings *timings)
++{
++    int rc;
++    struct lingsi_video *video = video_drvdata(file);
++
++    /*
++     * This blocks only if the driver is currently in the process of
++     * detecting a new resolution; in the event of no signal or timeout
++     * this function is woken up.
++     */
++    if (file->f_flags & O_NONBLOCK) {
++        if (test_bit(VIDEO_RES_CHANGE, &video->flags))
++            return -EAGAIN;
++    } else {
++        rc = wait_event_interruptible(video->wait,   !test_bit(VIDEO_RES_CHANGE,
++                            &video->flags));
++        if (rc)
++            return -EINTR;
++    }
++
++    timings->type = V4L2_DV_BT_656_1120;
++    timings->bt = video->detected_timings;
++
++    return video->v4l2_input_status ? -ENOLINK : 0;
++}
++
++static int lingsi_video_enum_dv_timings(struct file *file, void *fh,
++                    struct v4l2_enum_dv_timings *timings)
++{
++    return v4l2_enum_dv_timings_cap(timings, &lingsi_video_timings_cap,
++                    NULL, NULL);
++}
++
++static int lingsi_video_dv_timings_cap(struct file *file, void *fh,    struct v4l2_dv_timings_cap *cap)
++{
++    *cap = lingsi_video_timings_cap;
++
++    return 0;
++}
++
++static int lingsi_video_sub_event(struct v4l2_fh *fh,
++                  const struct v4l2_event_subscription *sub)
++{
++    switch (sub->type) {
++    case V4L2_EVENT_SOURCE_CHANGE:
++        return v4l2_src_change_event_subscribe(fh, sub);
++    }
++
++    return v4l2_ctrl_subscribe_event(fh, sub);
++}
++
++static const struct v4l2_ioctl_ops lingsi_video_ioctl_ops = {
++    .vidioc_querycap = lingsi_video_querycap,
++
++    .vidioc_enum_fmt_vid_cap = lingsi_video_enum_format,
++    .vidioc_g_fmt_vid_cap = lingsi_video_get_format,
++    .vidioc_s_fmt_vid_cap = lingsi_video_get_format,
++    .vidioc_try_fmt_vid_cap = lingsi_video_get_format,
++
++    .vidioc_reqbufs = vb2_ioctl_reqbufs,
++    .vidioc_querybuf = vb2_ioctl_querybuf,
++    .vidioc_qbuf = vb2_ioctl_qbuf,
++    .vidioc_expbuf = vb2_ioctl_expbuf,
++    .vidioc_dqbuf = vb2_ioctl_dqbuf,
++    .vidioc_create_bufs = vb2_ioctl_create_bufs,
++    .vidioc_prepare_buf = vb2_ioctl_prepare_buf,
++    .vidioc_streamon = vb2_ioctl_streamon,
++    .vidioc_streamoff = vb2_ioctl_streamoff,
++
++    .vidioc_enum_input = lingsi_video_enum_input,
++    .vidioc_g_input = lingsi_video_get_input,
++    .vidioc_s_input = lingsi_video_set_input,
++
++    .vidioc_g_parm = lingsi_video_get_parm,
++    .vidioc_s_parm = lingsi_video_set_parm,
++    .vidioc_enum_framesizes = lingsi_video_enum_framesizes,
++    .vidioc_enum_frameintervals = lingsi_video_enum_frameintervals,
++
++    .vidioc_s_dv_timings = lingsi_video_set_dv_timings,
++    .vidioc_g_dv_timings = lingsi_video_get_dv_timings,
++    .vidioc_query_dv_timings = lingsi_video_query_dv_timings,
++    .vidioc_enum_dv_timings = lingsi_video_enum_dv_timings,
++    .vidioc_dv_timings_cap = lingsi_video_dv_timings_cap,
++
++    .vidioc_subscribe_event = lingsi_video_sub_event,
++    .vidioc_unsubscribe_event = v4l2_event_unsubscribe,
++};
++
++static int lingsi_video_open(struct file *file)
++{
++    int rc;
++    struct lingsi_video *video = video_drvdata(file);
++
++    mutex_lock(&video->video_lock);
++
++    rc = v4l2_fh_open(file);
++    if (rc) {
++        mutex_unlock(&video->video_lock);
++        return rc;
++    }
++
++    if (v4l2_fh_is_singular_file(file))
++        lingsi_video_start(video);
++
++    mutex_unlock(&video->video_lock);
++
++    return 0;
++}
++
++static int lingsi_video_release(struct file *file)
++{
++    int rc;
++    struct lingsi_video *video = video_drvdata(file);
++
++    mutex_lock(&video->video_lock);
++
++    if (v4l2_fh_is_singular_file(file))
++        lingsi_video_stop(video);
++
++    rc = _vb2_fop_release(file, NULL);
++
++    mutex_unlock(&video->video_lock);
++
++    return rc;
++}
++
++static const struct v4l2_file_operations lingsi_video_v4l2_fops = {
++    .owner = THIS_MODULE,
++    .read = vb2_fop_read,
++    .poll = vb2_fop_poll,
++    .unlocked_ioctl = video_ioctl2,
++    .mmap = vb2_fop_mmap,
++    .open = lingsi_video_open,
++    .release = lingsi_video_release,
++};
++
++static int lingsi_video_queue_setup(struct vb2_queue *q, unsigned int *num_buffers, unsigned int *num_planes, unsigned int sizes[], struct device *alloc_devs[])
++{
++    struct lingsi_video *video = vb2_get_drv_priv(q);
++
++    if (*num_planes) {
++        if (sizes[0] < video->max_compressed_size) {
++            return -EINVAL;
++        }
++
++        return 0;
++    }
++
++    *num_planes = 1;
++    sizes[0] = video->max_compressed_size;
++
++    return 0;
++}
++
++static int lingsi_video_buf_prepare(struct vb2_buffer *vb)
++{
++    struct lingsi_video *video = vb2_get_drv_priv(vb->vb2_queue);
++
++    if (vb2_plane_size(vb, 0) < video->max_compressed_size) {
++        return -EINVAL;
++    }
++
++    return 0;
++}
++
++static int lingsi_video_start_streaming(struct vb2_queue *q,
++                    unsigned int count)
++{
++    int rc;
++    struct lingsi_video *video = vb2_get_drv_priv(q);
++
++    video->sequence = 0;
++
++    rc = lingsi_video_start_frame(video);
++    if (rc) {
++        lingsi_video_bufs_done(video, VB2_BUF_STATE_QUEUED);
++        return rc;
++    }
++
++    set_bit(VIDEO_STREAMING, &video->flags);
++    return 0;
++}
++
++static void lingsi_video_stop_streaming(struct vb2_queue *q)
++{
++    int rc;
++    struct lingsi_video *video = vb2_get_drv_priv(q);
++
++    clear_bit(VIDEO_STREAMING, &video->flags);
++
++    rc = wait_event_timeout(video->wait,
++                !test_bit(VIDEO_FRAME_INPRG, &video->flags),
++                STOP_TIMEOUT);
++    if (!rc) {
++        dev_dbg(video->dev, "Timed out when stopping streaming\n");
++
++        /*
++         * Need to force stop any DMA and try and get HW into a good
++         * state for future callingsi to start streaming again.
++         */
++        lingsi_video_off(video);
++        lingsi_video_on(video);
++
++        // lingsi_video_init_regs(video);
++
++        lingsi_video_get_resolution(video);
++    }
++
++    lingsi_video_bufs_done(video, VB2_BUF_STATE_ERROR);
++
++    /* Stop all pending DMA operations */
++    mutex_lock(&video->dma_lock);
++
++    dmaengine_terminate_sync(video->dma_chan);
++    mutex_unlock(&video->dma_lock);
++}
++
++static void lingsi_video_buf_queue(struct vb2_buffer *vb)
++{
++    bool empty;
++    struct lingsi_video *video = vb2_get_drv_priv(vb->vb2_queue);
++    struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
++    struct lingsi_video_buffer *avb = to_lingsi_video_buffer(vbuf);
++    unsigned long flags;
++
++    spin_lock_irqsave(&video->lock, flags);
++
++    empty = list_empty(&video->buffers);
++    list_add_tail(&avb->link, &video->buffers);
++    spin_unlock_irqrestore(&video->lock, flags);
++
++    if (test_bit(VIDEO_STREAMING, &video->flags) &&
++        !test_bit(VIDEO_FRAME_INPRG, &video->flags) && empty) {
++        lingsi_video_start_frame(video);
++    }
++}
++
++static const struct vb2_ops lingsi_video_vb2_ops = {
++    .queue_setup = lingsi_video_queue_setup,
++    .wait_prepare = vb2_ops_wait_prepare,
++    .wait_finish = vb2_ops_wait_finish,
++    .buf_prepare = lingsi_video_buf_prepare,
++    .start_streaming = lingsi_video_start_streaming,
++    .stop_streaming = lingsi_video_stop_streaming,
++    .buf_queue =  lingsi_video_buf_queue,
++};
++
++static int lingsi_video_setup_video(struct lingsi_video *video)
++{
++    struct v4l2_device *v4l2_dev = &video->v4l2_dev;
++    struct vb2_queue *vbq = &video->queue;
++    struct video_device *vdev = &video->vdev;
++    int rc;
++
++    video->pix_fmt.pixelformat = V4L2_PIX_FMT_XRGB32;
++    video->pix_fmt.field = V4L2_FIELD_NONE;
++    video->pix_fmt.colorspace = V4L2_COLORSPACE_SRGB;
++    video->pix_fmt.quantization = V4L2_QUANTIZATION_FULL_RANGE;
++    video->v4l2_input_status = V4L2_IN_ST_NO_SIGNAL;
++
++    rc = v4l2_device_register(video->dev, v4l2_dev);
++    if (rc) {
++        dev_err(video->dev, "Failed to register v4l2 device\n");
++        return rc;
++    }
++
++    vbq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
++    vbq->io_modes = VB2_MMAP | VB2_READ | VB2_DMABUF;
++    vbq->dev = v4l2_dev->dev;
++    vbq->lock = &video->video_lock;
++    vbq->ops = &lingsi_video_vb2_ops;
++    vbq->mem_ops = &vb2_dma_contig_memops; //&vb2_dma_sg_memops;
++    vbq->drv_priv = video;
++    vbq->buf_struct_size = sizeof(struct lingsi_video_buffer);
++    vbq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
++    vbq->min_buffers_needed = 3;
++
++    rc = vb2_queue_init(vbq);
++    if (rc) {
++        v4l2_device_unregister(v4l2_dev);
++
++        dev_err(video->dev, "Failed to init vb2 queue\n");
++        return rc;
++    }
++
++    vdev->queue = vbq;
++    vdev->fops = &lingsi_video_v4l2_fops;
++    vdev->device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_READWRITE |
++        V4L2_CAP_STREAMING;
++    vdev->v4l2_dev = v4l2_dev;
++    strscpy(vdev->name, DEVICE_NAME, sizeof(vdev->name));
++    vdev->vfl_type = VFL_TYPE_VIDEO;
++    vdev->vfl_dir = VFL_DIR_RX;
++    vdev->release = video_device_release_empty;
++    vdev->ioctl_ops = &lingsi_video_ioctl_ops;
++    vdev->lock = &video->video_lock;
++
++    video_set_drvdata(vdev, video);
++    rc = video_register_device(vdev, VFL_TYPE_VIDEO, 0);
++    if (rc) {
++        v4l2_device_unregister(v4l2_dev);
++
++        dev_err(video->dev, "Failed to register video device\n");
++        return rc;
++    }
++
++    return 0;
++}
++
++static int lingsi_video_init(struct lingsi_video *video)
++{
++    int rc;
++    struct device *dev = video->dev;
++
++    of_reserved_mem_device_init(dev);
++
++    rc = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
++    if (rc) {
++        dev_err(dev, "Failed to set DMA mask\n");
++        goto err_release_reserved_mem;
++    }
++    return 0;
++
++err_release_reserved_mem:
++    of_reserved_mem_device_release(dev);
++    return rc;
++}
++
++static const struct of_device_id lingsi_video_of_match[] = {
++    { .compatible = "lingsi,video-engine" },
++    {}
++};
++MODULE_DEVICE_TABLE(of, lingsi_video_of_match);
++
++static int lingsi_video_probe(struct platform_device *pdev)
++{
++    struct device_node *np = pdev->dev.of_node;
++    struct lingsi_video *video;
++    int rc;
++    int ret = 0;
++
++    video = devm_kzalloc(&pdev->dev, sizeof(*video), GFP_KERNEL);
++    if (!video){
++        return -ENOMEM;
++    }
++
++    rc = of_property_read_u64(np, "vram", &video->vram);
++    if(rc) {
++        dev_err(&pdev->dev, "No specify vram in dts\n");
++        return -ENOMEM;
++    }
++
++    video->dma_chan = dma_request_chan(&pdev->dev, "gdma");
++    if (IS_ERR(video->dma_chan)) {
++        ret = PTR_ERR(video->dma_chan);
++        if (ret != -EPROBE_DEFER)
++            dev_err(&pdev->dev,
++                "Failed to request DMA channel: %d\n", ret);
++        return ret;
++    }
++
++    video->max_compressed_size = IMAGE_SIZE;
++    video->frame_rate = 30;
++    video->dev = &pdev->dev;
++    spin_lock_init(&video->lock);
++    mutex_init(&video->video_lock);
++    mutex_init(&video->dma_lock);
++    init_waitqueue_head(&video->wait);
++
++    INIT_LIST_HEAD(&video->buffers);
++
++    rc = lingsi_video_init(video);
++    if (rc)
++        return rc;
++
++    rc = lingsi_video_setup_video(video);
++    if (rc) {
++        return rc;
++    }
++
++    return 0;
++}
++
++static int lingsi_video_remove(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    struct v4l2_device *v4l2_dev = dev_get_drvdata(dev);
++    struct lingsi_video *video = to_lingsi_video(v4l2_dev);
++
++    lingsi_video_off(video);
++
++    vb2_video_unregister_device(&video->vdev);
++
++    v4l2_device_unregister(v4l2_dev);
++
++    of_reserved_mem_device_release(dev);
++
++    dma_release_channel(video->dma_chan);
++    return 0;
++}
++
++static struct platform_driver lingsi_video_driver = {
++    .driver = {
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_video_of_match,
++    },
++    .probe = lingsi_video_probe,
++    .remove = lingsi_video_remove,
++};
++
++module_platform_driver(lingsi_video_driver);
++
++MODULE_DESCRIPTION("LINGSI Video Engine Driver");
++MODULE_AUTHOR("Eddie James");
++MODULE_LICENSE("GPL v2");
+-- 
+2.39.2
+

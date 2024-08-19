@@ -1,0 +1,123 @@
+From e8b241d2f47cf6906d55ffd7eb9dac77caee6d82 Mon Sep 17 00:00:00 2001
+From: Hunter <htliu@linkedsemi.com>
+Date: Thu, 29 Feb 2024 13:39:19 +0800
+Subject: [PATCH] lingsi: add kvm support
+
+---
+ create_usbhid.sh | 19 +++++--------------
+ ikvm_input.hpp   |  2 +-
+ ikvm_server.cpp  |  1 +
+ ikvm_video.cpp   |  8 +++++++-
+ 4 files changed, 14 insertions(+), 16 deletions(-)
+
+diff --git a/create_usbhid.sh b/create_usbhid.sh
+index 58e4034..8407e36 100644
+--- a/create_usbhid.sh
++++ b/create_usbhid.sh
+@@ -1,10 +1,11 @@
+ #!/bin/sh
+ 
+ hid_conf_directory="/sys/kernel/config/usb_gadget/obmc_hid"
+-dev_name="1e6a0000.usb-vhub"
++dev_name="ci_hdrc.0"
+ 
+ create_hid() {
+     # create gadget
++    [ -d "/sys/kernel/config/usb_gadget" ] || modprobe libcomposite
+     mkdir "${hid_conf_directory}"
+     cd "${hid_conf_directory}" || exit 1
+ 
+@@ -125,23 +126,13 @@ create_hid() {
+ }
+ 
+ connect_hid() {
+-    if ! grep -q "${dev_name}:p" UDC; then
+-        i=0
+-        num_ports=5
+-        base_usb_dir="/sys/bus/platform/devices/${dev_name}/${dev_name}:p"
+-        while [ "${i}" -lt "${num_ports}" ]; do
+-            port=$(("${i}" + 1))
+-            i="${port}"
+-            if [ ! -e "${base_usb_dir}${port}/gadget/suspended" ]; then
+-                break
+-            fi
+-        done
+-        echo "${dev_name}:p${port}" > UDC
++    if ! grep -q "${dev_name}" UDC; then
++        echo "${dev_name}" > UDC
+     fi
+ }
+ 
+ disconnect_hid() {
+-    if grep -q "${dev_name}:p" UDC; then
++    if grep -q "${dev_name}" UDC; then
+         echo "" > UDC
+     fi
+ }
+diff --git a/ikvm_input.hpp b/ikvm_input.hpp
+index 00d8e7f..bf27980 100644
+--- a/ikvm_input.hpp
++++ b/ikvm_input.hpp
+@@ -83,7 +83,7 @@ class Input
+         "/sys/kernel/config/usb_gadget/obmc_hid/UDC";
+     /* @brief Path to the USB virtual hub */
+     static constexpr const char* usbVirtualHubPath =
+-        "/sys/bus/platform/devices/1e6a0000.usb-vhub";
++        "/sys/bus/platform/devices/e0002000.usb";
+     /* @brief Retry limit for writing an HID report */
+     static constexpr int HID_REPORT_RETRY_MAX = 5;
+     /*
+diff --git a/ikvm_server.cpp b/ikvm_server.cpp
+index 6a6cd06..170ebec 100644
+--- a/ikvm_server.cpp
++++ b/ikvm_server.cpp
+@@ -159,6 +159,7 @@ void Server::sendFrame()
+ 
+         switch (video.getPixelformat())
+         {
++            case V4L2_PIX_FMT_XRGB32:
+             case V4L2_PIX_FMT_RGB24:
+                 framebuffer.assign(data, data + video.getFrameSize());
+                 rfbMarkRectAsModified(server, 0, 0, video.getWidth(),
+diff --git a/ikvm_video.cpp b/ikvm_video.cpp
+index 3445715..5548d97 100644
+--- a/ikvm_video.cpp
++++ b/ikvm_video.cpp
+@@ -378,7 +378,9 @@ void Video::start()
+     v4l2_capability cap;
+     v4l2_format fmt;
+     v4l2_streamparm sparm;
++#if 0
+     v4l2_control ctrl;
++#endif
+ 
+     if (fd >= 0)
+     {
+@@ -445,6 +447,7 @@ void Video::start()
+                             entry("ERROR=%s", strerror(errno)));
+     }
+ 
++#if 0
+     ctrl.id = V4L2_CID_JPEG_CHROMA_SUBSAMPLING;
+     ctrl.value = subSampling ? V4L2_JPEG_CHROMA_SUBSAMPLING_420
+                              : V4L2_JPEG_CHROMA_SUBSAMPLING_444;
+@@ -454,12 +457,15 @@ void Video::start()
+         log<level::WARNING>("Failed to set video jpeg subsampling",
+                             entry("ERROR=%s", strerror(errno)));
+     }
++#endif
+ 
+     height = fmt.fmt.pix.height;
+     width = fmt.fmt.pix.width;
+     pixelformat = fmt.fmt.pix.pixelformat;
+ 
+-    if (pixelformat != V4L2_PIX_FMT_RGB24 && pixelformat != V4L2_PIX_FMT_JPEG)
++    if (pixelformat != V4L2_PIX_FMT_XRGB32
++     && pixelformat != V4L2_PIX_FMT_RGB24
++     && pixelformat != V4L2_PIX_FMT_JPEG)
+     {
+         log<level::ERR>("Pixel Format not supported",
+                         entry("PIXELFORMAT=%d", pixelformat));
+-- 
+2.34.1
+

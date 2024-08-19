@@ -1,0 +1,190 @@
+#ifndef PER_FUNC_MUX_H_
+#define PER_FUNC_MUX_H_
+
+#define MODE_GPIO   0
+/* set to 2 to compatible func lingsi_pmx_set_mode() */
+#define MODE_AF     2
+// #define ANALOG
+
+/* define Pins number*/
+#define LINGSI_GPIO_PINS_PER_BANK        16
+#define PIN_NO(port, line)               (((port) - 'A') * LINGSI_GPIO_PINS_PER_BANK + (line))
+#define LINGSI_PINMUX(port, line, mode)  (((PIN_NO(port, line)) | ((mode) << 16)))
+
+#define LINGSI_GPIO            0
+#define LINGSI_GPTIMA1_CH1     1
+#define LINGSI_GPTIMA1_CH2     2
+#define LINGSI_GPTIMA1_CH3     3
+#define LINGSI_GPTIMA1_CH4     4
+#define LINGSI_GPTIMA1_ETR     5
+#define LINGSI_GPTIMA2_CH1     6
+#define LINGSI_GPTIMA2_CH2     7
+#define LINGSI_GPTIMA2_CH3     8
+#define LINGSI_GPTIMA2_CH4     9
+#define LINGSI_GPTIMA2_ETR     10
+#define LINGSI_GPTIMB1_CH1     11
+#define LINGSI_GPTIMB1_CH2     12
+#define LINGSI_GPTIMB1_CH3     13
+#define LINGSI_GPTIMB1_CH4     14
+#define LINGSI_GPTIMB1_ETR     15
+#define LINGSI_GPTIMC1_CH1     16
+#define LINGSI_GPTIMC1_CH1N    17
+#define LINGSI_GPTIMC1_CH2     18
+#define LINGSI_GPTIMC1_BK      19
+#define LINGSI_ADTIM1_CH1      20
+#define LINGSI_ADTIM1_CH1N     21
+#define LINGSI_ADTIM1_CH2      22
+#define LINGSI_ADTIM1_CH2N     23
+#define LINGSI_ADTIM1_CH3      24
+#define LINGSI_ADTIM1_CH3N     25
+#define LINGSI_ADTIM1_CH4      26
+#define LINGSI_ADTIM1_ETR      27
+#define LINGSI_ADTIM1_BK       28
+#define LINGSI_ADTIM2_CH1      29
+#define LINGSI_ADTIM2_CH1N     30
+#define LINGSI_ADTIM2_CH2      31
+#define LINGSI_ADTIM2_CH2N     32
+#define LINGSI_ADTIM2_CH3      33
+#define LINGSI_ADTIM2_CH3N     34
+#define LINGSI_ADTIM2_CH4      35
+#define LINGSI_ADTIM2_ETR      36
+#define LINGSI_ADTIM2_BK       37
+#define LINGSI_ADTIM3_CH1      38
+#define LINGSI_ADTIM3_CH1N     39
+#define LINGSI_ADTIM3_CH2      40
+#define LINGSI_ADTIM3_CH2N     41
+#define LINGSI_ADTIM3_CH3      42
+#define LINGSI_ADTIM3_CH3N     43
+#define LINGSI_ADTIM3_CH4      44
+#define LINGSI_ADTIM3_ETR      45
+#define LINGSI_ADTIM3_BK       46
+#define LINGSI_ADTIM4_CH1      47
+#define LINGSI_ADTIM4_CH1N     48
+#define LINGSI_ADTIM4_CH2      49
+#define LINGSI_ADTIM4_CH2N     50
+#define LINGSI_ADTIM4_CH3      51
+#define LINGSI_ADTIM4_CH3N     52
+#define LINGSI_ADTIM4_CH4      53
+#define LINGSI_ADTIM4_ETR      54
+#define LINGSI_ADTIM4_BK       55
+#define LINGSI_I2C1_SCL        56
+#define LINGSI_I2C1_SDA        57
+#define LINGSI_I2C1_SMBA       58
+#define LINGSI_I2C2_SCL        59
+#define LINGSI_I2C2_SDA        60
+#define LINGSI_I2C2_SMBA       61
+#define LINGSI_I2C3_SDA        62
+#define LINGSI_I2C3_SCL        63
+#define LINGSI_I2C3_SMBA       64
+#define LINGSI_I2C4_SCL        65
+#define LINGSI_I2C4_SDA        66
+#define LINGSI_I2C4_SMBA       67
+#define LINGSI_I2C5_SCL        68
+#define LINGSI_I2C5_SDA        69
+#define LINGSI_I2C5_SMBA       70
+#define LINGSI_I2C6_SDA        71
+#define LINGSI_I2C6_SCL        72
+#define LINGSI_I2C6_SMBA       73
+#define LINGSI_UART1_TXD       74
+#define LINGSI_UART1_RXD       75
+#define LINGSI_UART1_CTSN      76
+#define LINGSI_UART1_RTSN      77
+#define LINGSI_UART1_CK        78
+#define LINGSI_UART2_TXD       79
+#define LINGSI_UART2_RXD       80
+#define LINGSI_UART2_CTSN      81
+#define LINGSI_UART2_RTSN      82
+#define LINGSI_UART3_TXD       83
+#define LINGSI_UART3_RXD       84
+#define LINGSI_UART3_CTSN      85
+#define LINGSI_UART3_RTSN      86
+#define LINGSI_DWUART1_TXD       87
+#define LINGSI_DWUART1_RXD       88
+#define LINGSI_DWUART1_CTSN      89
+#define LINGSI_DWUART1_RTSN      90
+#define LINGSI_DWUART1_DE        91
+#define LINGSI_DWUART1_RE        92
+#define LINGSI_DWUART2_TXD       93
+#define LINGSI_DWUART2_RXD       94
+#define LINGSI_DWUART2_CTSN      95
+#define LINGSI_DWUART2_RTSN      96
+#define LINGSI_DWUART2_DE        97
+#define LINGSI_DWUART2_RE        98
+#define LINGSI_SPI1_NSS0       99
+#define LINGSI_SPI1_NSS1       100
+#define LINGSI_SPI1_SCK        101
+#define LINGSI_SPI1_DQ0        102
+#define LINGSI_SPI1_DQ1        103
+#define LINGSI_SPI1_DQ2        104
+#define LINGSI_SPI1_DQ3        105
+#define LINGSI_SPI2_SCK        106
+#define LINGSI_SPI2_NSS        107
+#define LINGSI_SPI2_MOSI       108
+#define LINGSI_SPI2_MISO       109
+#define LINGSI_SPI2_I2S        110
+#define LINGSI_SPI3_SCK        111
+#define LINGSI_SPI3_NSS        112
+#define LINGSI_SPI3_MOSI       113
+#define LINGSI_SPI3_MISO       114
+#define LINGSI_SPI3_I2S        115
+#define LINGSI_PDM_CLK         116
+#define LINGSI_PDM_DATA0       117
+#define LINGSI_PDM_DATA1       118
+#define LINGSI_PIS_CH0         119
+#define LINGSI_PIS_CH1         120
+#define LINGSI_FDCAN_TXD       121
+#define LINGSI_FDCAN_RXD       122
+#define LINGSI_USB_DP          123
+#define LINGSI_USB_DM          124
+#define LINGSI_COMP1           125
+#define LINGSI_COMP2           126
+#define LINGSI_COMP3           127
+#define LINGSI_PWM1            128
+#define LINGSI_PWM2            129
+#define LINGSI_PWM3            130
+#define LINGSI_PWM4            131
+#define LINGSI_PWM5            132
+#define LINGSI_PWM6            133
+#define LINGSI_PWM7            134
+#define LINGSI_PWM8            135
+#define LINGSI_CAP1            136
+#define LINGSI_CAP2            137
+#define LINGSI_CAP3            138
+#define LINGSI_CAP4            139
+#define LINGSI_CAP5            140
+#define LINGSI_CAP6            141
+#define LINGSI_CAP7            142
+#define LINGSI_CAP8            143
+#define LINGSI_OWM             144
+#define LINGSI_PS2H1_CLK      145
+#define LINGSI_PS2H1_DAT      146
+#define LINGSI_PS2H2_CLK      147
+#define LINGSI_PS2H2_DAT      148
+#define LINGSI_PS2H3_CLK      149
+#define LINGSI_PS2H3_DAT      150
+#define LINGSI_PS2H4_CLK      151
+#define LINGSI_PS2H4_DAT      152
+#define LINGSI_CEC             153
+#define LINGSI_PECI            154
+#define LINGSI_I2C_DBG_SCL     155
+#define LINGSI_I2C_DBG_SDA     156
+#define LINGSI_USB_CID         163
+
+#define AF_START            LINGSI_GPTIMA1_CH1
+#define AF_END              LINGSI_USB_CID
+
+// #define SGPMLD IIC5_SDA
+// #define SGPMO  IIC6_SCL
+// #define SGPMCK IIC5_SCL
+// #define SGPMI  IIC6_SDA
+#define LINGSI_SGPMLD LINGSI_PS2H3_DAT
+#define LINGSI_SGPMO  LINGSI_PS2H4_CLK
+#define LINGSI_SGPMCK LINGSI_PS2H3_CLK
+#define LINGSI_SGPMI  LINGSI_PS2H4_DAT
+
+#define LINGSI_SGPSMLD LINGSI_PS2H1_DAT
+#define LINGSI_SGPSMO  LINGSI_PS2H2_CLK
+#define LINGSI_SGPSMCK LINGSI_PS2H1_CLK
+#define LINGSI_SGPSMI  LINGSI_PS2H2_DAT
+
+#endif

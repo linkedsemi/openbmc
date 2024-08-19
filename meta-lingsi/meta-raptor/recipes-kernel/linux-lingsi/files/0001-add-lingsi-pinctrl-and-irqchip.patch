@@ -1,0 +1,3190 @@
+From 6cea522b30c03e17cd47cb912a207df2c99fb521 Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Sun, 11 Aug 2024 18:25:44 +0800
+Subject: [PATCH 1/3] add lingsi pinctrl and irqchip
+
+---
+Upstream-Status: Pending
+
+ arch/arm/mach-zynq/Kconfig                    |    2 +
+ drivers/irqchip/Kconfig                       |   17 +
+ drivers/irqchip/Makefile                      |    2 +
+ drivers/irqchip/irq-lingsi-exti.c             |  388 ++++++
+ drivers/irqchip/irq-lingsi-peri.c             |  324 +++++
+ drivers/pinctrl/Kconfig                       |    1 +
+ drivers/pinctrl/Makefile                      |    1 +
+ drivers/pinctrl/lingsi/Kconfig                |   18 +
+ drivers/pinctrl/lingsi/Makefile               |    6 +
+ .../pinctrl/lingsi/pinctrl-lingsi-raptor.c    |  834 ++++++++++++
+ drivers/pinctrl/lingsi/pinctrl-lingsi.c       | 1209 +++++++++++++++++
+ drivers/pinctrl/lingsi/pinctrl-lingsi.h       |   69 +
+ include/dt-bindings/pinctrl/lingsi-pinfunc.h  |  185 +++
+ 13 files changed, 3056 insertions(+)
+ create mode 100644 drivers/irqchip/irq-lingsi-exti.c
+ create mode 100644 drivers/irqchip/irq-lingsi-peri.c
+ create mode 100644 drivers/pinctrl/lingsi/Kconfig
+ create mode 100644 drivers/pinctrl/lingsi/Makefile
+ create mode 100644 drivers/pinctrl/lingsi/pinctrl-lingsi-raptor.c
+ create mode 100644 drivers/pinctrl/lingsi/pinctrl-lingsi.c
+ create mode 100644 drivers/pinctrl/lingsi/pinctrl-lingsi.h
+ create mode 100644 include/dt-bindings/pinctrl/lingsi-pinfunc.h
+
+diff --git a/arch/arm/mach-zynq/Kconfig b/arch/arm/mach-zynq/Kconfig
+index 05be5aa9b402..b718e7290d9b 100644
+--- a/arch/arm/mach-zynq/Kconfig
++++ b/arch/arm/mach-zynq/Kconfig
+@@ -13,5 +13,7 @@ config ARCH_ZYNQ
+ 	select PINCTRL
+ 	select PINCTRL_ZYNQ
+ 	select SOC_BUS
++	select LINGSI_PERI_INTC
++	select LINGSI_EXTI_INTC
+ 	help
+ 	  Support for Xilinx Zynq ARM Cortex A9 Platform
+diff --git a/drivers/irqchip/Kconfig b/drivers/irqchip/Kconfig
+index f7149d0f3d45..81a4cf20ddb8 100644
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -311,6 +311,13 @@ config XILINX_INTC
+ 	  This is used as a primary controller with MicroBlaze and can also
+ 	  be used as a secondary chained controller on other platforms.
+ 
++config IRQCHIP_XILINX_INTC_MODULE_SUPPORT_EXPERIMENTAL
++	bool "IRQCHIP Xilinx Intc driver module support (experimental)"
++	depends on XILINX_INTC
++	help
++	  Enable support to load irqchip driver as a module as part of DT overlay.
++	  This is currently supported for XIlinx INTC irqchip driver.
++
+ config IRQ_CROSSBAR
+ 	bool
+ 	help
+@@ -679,4 +686,14 @@ config SUNPLUS_SP7021_INTC
+ 	  chained controller, routing all interrupt source in P-Chip to
+ 	  the primary controller on C-Chip.
+ 
++  config LINGSI_PERI_INTC
++	  bool
++	  select IRQ_DOMAIN
++	  select GENERIC_IRQ_CHIP
++
++  config LINGSI_EXTI_INTC
++	  bool
++	  select IRQ_DOMAIN
++	  select GENERIC_IRQ_CHIP
++
+ endmenu
+diff --git a/drivers/irqchip/Makefile b/drivers/irqchip/Makefile
+index ffd945fe71aa..ccb7c7380553 100644
+--- a/drivers/irqchip/Makefile
++++ b/drivers/irqchip/Makefile
+@@ -120,3 +120,5 @@ obj-$(CONFIG_IRQ_IDT3243X)		+= irq-idt3243x.o
+ obj-$(CONFIG_APPLE_AIC)			+= irq-apple-aic.o
+ obj-$(CONFIG_MCHP_EIC)			+= irq-mchp-eic.o
+ obj-$(CONFIG_SUNPLUS_SP7021_INTC)	+= irq-sp7021-intc.o
++obj-$(CONFIG_LINGSI_PERI_INTC) 		+= irq-lingsi-peri.o
++obj-$(CONFIG_LINGSI_EXTI_INTC) 		+= irq-lingsi-exti.o
+diff --git a/drivers/irqchip/irq-lingsi-exti.c b/drivers/irqchip/irq-lingsi-exti.c
+new file mode 100644
+index 000000000000..f2d6408f247c
+--- /dev/null
++++ b/drivers/irqchip/irq-lingsi-exti.c
+@@ -0,0 +1,388 @@
++#include <linux/bitops.h>
++#include <linux/delay.h>
++#include <linux/hwspinlock.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/irq.h>
++#include <linux/irqchip.h>
++#include <linux/irqchip/chained_irq.h>
++#include <linux/irqdomain.h>
++#include <linux/module.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/of_platform.h>
++#include <linux/syscore_ops.h>
++#include <linux/mfd/syscon.h>
++#include <linux/regmap.h>
++
++#define IRQS_PER_BANK 16
++
++#define LINGSI_EXTI_MSK 0x0
++#define LINGSI_EXTI_CLR 0x20
++#define LINGSI_EXTI_STT 0x40
++#define LINGSI_EXTI_RAW 0x60
++
++struct lingsi_exti_bank {
++    u32 mask;
++    u32 clr;
++    u32 stt;
++    u32 raw;
++};
++
++struct lingsi_exti_drv_data {
++    const struct lingsi_exti_bank **exti_banks;
++    u32 bank_nr;
++};
++
++struct lingsi_exti_chip_data {
++    struct lingsi_exti_host_data *host_data;
++    const struct lingsi_exti_bank *reg_bank;
++    u32 irq_level_bank;
++    struct raw_spinlock rlock;
++};
++
++struct lingsi_exti_host_data {
++    void __iomem *base;
++    struct lingsi_exti_chip_data *chips_data;
++    const struct lingsi_exti_drv_data *drv_data;
++    struct hwspinlock *hwlock;
++};
++
++static struct lingsi_exti_host_data *lingsi_host_data;
++
++static const struct lingsi_exti_bank lingsi_exti_b0 = {
++    .mask = LINGSI_EXTI_MSK,
++    .clr  = LINGSI_EXTI_CLR,
++    .stt  = LINGSI_EXTI_STT,
++    .raw  = LINGSI_EXTI_RAW,
++};
++
++static const struct lingsi_exti_bank lingsi_exti_b1 = {
++    .mask = LINGSI_EXTI_MSK + 0x4,
++    .clr  = LINGSI_EXTI_CLR + 0x4,
++    .stt  = LINGSI_EXTI_STT + 0x4,
++    .raw  = LINGSI_EXTI_RAW + 0x4,
++};
++
++static const struct lingsi_exti_bank lingsi_exti_b2 = {
++    .mask = LINGSI_EXTI_MSK + 0x8,
++    .clr  = LINGSI_EXTI_CLR + 0x8,
++    .stt  = LINGSI_EXTI_STT + 0x8,
++    .raw  = LINGSI_EXTI_RAW + 0x8,
++};
++
++static const struct lingsi_exti_bank lingsi_exti_b3 = {
++    .mask = LINGSI_EXTI_MSK + 0xc,
++    .clr  = LINGSI_EXTI_CLR + 0xc,
++    .stt  = LINGSI_EXTI_STT + 0xc,
++    .raw  = LINGSI_EXTI_RAW + 0xc,
++};
++
++static const struct lingsi_exti_bank lingsi_exti_b4 = {
++    .mask = LINGSI_EXTI_MSK + 0x10,
++    .clr  = LINGSI_EXTI_CLR + 0x10,
++    .stt  = LINGSI_EXTI_STT + 0x10,
++    .raw  = LINGSI_EXTI_RAW + 0x10,
++};
++
++static const struct lingsi_exti_bank lingsi_exti_b5 = {
++    .mask = LINGSI_EXTI_MSK + 0x14,
++    .clr  = LINGSI_EXTI_CLR + 0x14,
++    .stt  = LINGSI_EXTI_STT + 0x14,
++    .raw  = LINGSI_EXTI_RAW + 0x14,
++};
++
++static const struct lingsi_exti_bank lingsi_exti_b6 = {
++    .mask = LINGSI_EXTI_MSK + 0x18,
++    .clr  = LINGSI_EXTI_CLR + 0x18,
++    .stt  = LINGSI_EXTI_STT + 0x18,
++    .raw  = LINGSI_EXTI_RAW + 0x18,
++};
++
++static const struct lingsi_exti_bank lingsi_exti_b7 = {
++    .mask = LINGSI_EXTI_MSK + 0x1c,
++    .clr  = LINGSI_EXTI_CLR + 0x1c,
++    .stt  = LINGSI_EXTI_STT + 0x1c,
++    .raw  = LINGSI_EXTI_RAW + 0x1c,
++};
++
++static const struct lingsi_exti_bank *lingsi_exti_banks[] = {
++    &lingsi_exti_b0,
++    &lingsi_exti_b1,
++    &lingsi_exti_b2,
++    &lingsi_exti_b3,
++    &lingsi_exti_b4,
++    &lingsi_exti_b5,
++    &lingsi_exti_b6,
++    &lingsi_exti_b7,
++};
++
++static const struct lingsi_exti_drv_data lingsi_drv_data = {
++    .exti_banks = lingsi_exti_banks,
++    .bank_nr = ARRAY_SIZE(lingsi_exti_banks),
++};
++
++static unsigned long lingsi_exti_pending(struct irq_chip_generic *gc)
++{
++    struct lingsi_exti_chip_data *chip_data = gc->private;
++    void __iomem *base = chip_data->host_data->base;
++    const struct lingsi_exti_bank *lingsi_bank = chip_data->reg_bank;
++    unsigned long pending = 0;
++    unsigned long val = 0;
++    pending = readl_relaxed(base + lingsi_bank->stt);
++    pending |= (pending >> IRQS_PER_BANK);
++    pending &= GENMASK(IRQS_PER_BANK - 1, 0);
++    if(pending) {
++        val = readl_relaxed(base + lingsi_bank->mask);
++    }
++    return pending;
++}
++
++static void lingsi_irq_handler(struct irq_desc *desc)
++{
++    struct irq_domain *domain = irq_desc_get_handler_data(desc);
++    struct irq_chip *chip = irq_desc_get_chip(desc);
++    unsigned int nbanks = domain->gc->num_chips;
++    struct irq_chip_generic *gc;
++    unsigned long pending;
++    int n, i, irq_base = 0;
++    chained_irq_enter(chip, desc);
++
++    for (i = 0; i < nbanks; i++, irq_base += IRQS_PER_BANK) {
++        gc = irq_get_domain_generic_chip(domain, irq_base);
++
++        while ((pending = lingsi_exti_pending(gc))) {
++            for_each_set_bit(n, &pending, IRQS_PER_BANK) {
++                generic_handle_domain_irq(domain, irq_base + n);
++            }
++         }
++    }
++
++    chained_irq_exit(chip, desc);
++}
++
++static int lingsi_exti_set_irq_type(struct irq_data *d, unsigned int type)
++{
++    struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
++    struct lingsi_exti_chip_data *chip_data = gc->private;
++    uint32_t *irq_level_bank = &chip_data->irq_level_bank;
++    uint32_t gpio = irqd_to_hwirq(d) % IRQS_PER_BANK;
++
++    irq_gc_lock(gc);
++
++    switch (type) {
++    case IRQ_TYPE_LEVEL_HIGH:
++    case IRQ_TYPE_EDGE_RISING:
++        *irq_level_bank |= BIT(gpio);
++        break;
++    case IRQ_TYPE_LEVEL_LOW:
++    case IRQ_TYPE_EDGE_FALLING:
++        *irq_level_bank |= BIT(gpio) << IRQS_PER_BANK;
++        break;
++    case IRQ_TYPE_EDGE_BOTH:
++        *irq_level_bank |= BIT(gpio) | (BIT(gpio) << IRQS_PER_BANK);
++        break;
++    default:
++        return -EINVAL;
++    }
++
++    irq_gc_unlock(gc);
++    return 0;
++}
++
++static int lingsi_exti_alloc(struct irq_domain *d, unsigned int virq,
++                unsigned int nr_irqs, void *data)
++{
++    struct irq_fwspec *fwspec = data;
++    irq_hw_number_t hwirq;
++    hwirq = fwspec->param[0];
++
++    irq_map_generic_chip(d, virq, hwirq);
++    return 0;
++}
++
++static void lingsi_exti_free(struct irq_domain *d, unsigned int virq,
++                unsigned int nr_irqs)
++{
++    struct irq_data *data = irq_domain_get_irq_data(d, virq);
++    irq_domain_reset_irq_data(data);
++}
++
++static const struct irq_domain_ops irq_exti_domain_ops = {
++    .map    = irq_map_generic_chip,
++    .alloc  = lingsi_exti_alloc,
++    .free    = lingsi_exti_free,
++};
++
++static void lingsi_exti_irq_ack(struct irq_data *d)
++{
++    struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
++    struct lingsi_exti_chip_data *chip_data = gc->private;
++    void __iomem *base = chip_data->host_data->base;
++    const struct lingsi_exti_bank *lingsi_bank = chip_data->reg_bank;
++    uint32_t gpio = irqd_to_hwirq(d) % IRQS_PER_BANK;
++    irq_gc_lock(gc);
++
++    iowrite32(BIT(gpio) | (BIT(gpio) << IRQS_PER_BANK), base + lingsi_bank->clr);
++    iowrite32(0x0, base + lingsi_bank->clr);
++
++    irq_gc_unlock(gc);
++}
++
++/* Disable GPIO interrupt */
++static void lingsi_exti_irq_mask(struct irq_data *d)
++{
++    struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
++    struct lingsi_exti_chip_data *chip_data = gc->private;
++    void __iomem *base = chip_data->host_data->base;
++    const struct lingsi_exti_bank *lingsi_bank = chip_data->reg_bank;
++    uint32_t *irq_level_bank = &chip_data->irq_level_bank;
++    uint32_t gpio = irqd_to_hwirq(d) % IRQS_PER_BANK;
++
++    raw_spin_lock(&chip_data->rlock);
++    *irq_level_bank &= ~(BIT(gpio) | (BIT(gpio) << IRQS_PER_BANK));
++    iowrite32(*irq_level_bank, base + lingsi_bank->mask);
++    iowrite32(0x0, base + lingsi_bank->clr);
++    raw_spin_unlock(&chip_data->rlock);
++}
++
++/* Enable GPIO interrupt */
++static void lingsi_exti_irq_unmask(struct irq_data *d)
++{
++    struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
++    struct lingsi_exti_chip_data *chip_data = gc->private;
++    void __iomem *base = chip_data->host_data->base;
++    const struct lingsi_exti_bank *lingsi_bank = chip_data->reg_bank;
++    uint32_t *irq_level_bank = &chip_data->irq_level_bank;
++
++    raw_spin_lock(&chip_data->rlock);
++    iowrite32(*irq_level_bank, base + lingsi_bank->mask);
++    iowrite32(0x0, base + lingsi_bank->clr);
++    raw_spin_unlock(&chip_data->rlock);
++}
++
++static struct
++lingsi_exti_host_data *lingsi_exti_host_init(const struct lingsi_exti_drv_data *dd,
++                       struct device_node *node)
++{
++    struct lingsi_exti_host_data *host_data;
++    host_data = kzalloc(sizeof(*host_data), GFP_KERNEL);
++    if (!host_data)
++        return NULL;
++
++    host_data->drv_data = dd;
++    host_data->chips_data = kcalloc(dd->bank_nr,
++                    sizeof(struct lingsi_exti_chip_data),
++                    GFP_KERNEL);
++    if (!host_data->chips_data)
++        goto free_host_data;
++
++    host_data->base = of_iomap(node, 0);
++    if (!host_data->base) {
++        pr_err("%pOF: Unable to map registers\n", node);
++        goto free_chips_data;
++    }
++
++    lingsi_host_data = host_data;
++
++    return host_data;
++
++free_chips_data:
++    kfree(host_data->chips_data);
++free_host_data:
++    kfree(host_data);
++
++    return NULL;
++}
++
++static struct
++lingsi_exti_chip_data *lingsi_exti_chip_init(struct lingsi_exti_host_data *h_data,
++                       u32 bank_idx,
++                       struct device_node *node)
++{
++    const struct lingsi_exti_bank *lingsi_bank;
++    struct lingsi_exti_chip_data *chip_data;
++    lingsi_bank = h_data->drv_data->exti_banks[bank_idx];
++    chip_data = &h_data->chips_data[bank_idx];
++    chip_data->host_data = h_data;
++    chip_data->reg_bank = lingsi_bank;
++
++    raw_spin_lock_init(&chip_data->rlock);
++
++    pr_info("%pOF: bank%d\n", node, bank_idx);
++
++    return chip_data;
++}
++
++static int __init lingsi_exti_init(const struct lingsi_exti_drv_data *drv_data,
++                  struct device_node *node)
++{
++    struct lingsi_exti_host_data *host_data;
++    unsigned int clr = IRQ_NOREQUEST | IRQ_NOPROBE | IRQ_NOAUTOEN;
++    int nr_irqs, ret, i;
++    struct irq_chip_generic *gc;
++    struct irq_domain *domain;
++    host_data = lingsi_exti_host_init(drv_data, node);
++    if (!host_data)
++        return -ENOMEM;
++
++    domain = irq_domain_add_linear(node, drv_data->bank_nr * IRQS_PER_BANK,
++                       &irq_exti_domain_ops, NULL);
++    if (!domain) {
++        pr_err("%pOFn: Could not register interrupt domain.\n",
++               node);
++        ret = -ENOMEM;
++        goto out_unmap;
++    }
++
++    ret = irq_alloc_domain_generic_chips(domain, IRQS_PER_BANK, 1, "exti",
++                         handle_edge_irq, clr, 0, 0);
++    if (ret) {
++        pr_err("%pOF: Could not allocate generic interrupt chip.\n",
++               node);
++        goto out_free_domain;
++    }
++
++    for (i = 0; i < drv_data->bank_nr; i++) {
++        const struct lingsi_exti_bank *lingsi_bank;
++        struct lingsi_exti_chip_data *chip_data;
++
++        lingsi_bank = drv_data->exti_banks[i];
++        chip_data = lingsi_exti_chip_init(host_data, i, node);
++
++        gc = irq_get_domain_generic_chip(domain, i * IRQS_PER_BANK);
++
++        gc->reg_base = host_data->base;
++        gc->chip_types->type = IRQ_TYPE_EDGE_BOTH;
++        gc->chip_types->chip.irq_ack = lingsi_exti_irq_ack;
++        gc->chip_types->chip.irq_mask = lingsi_exti_irq_mask;
++        gc->chip_types->chip.irq_unmask = lingsi_exti_irq_unmask;
++        gc->chip_types->chip.irq_set_type = lingsi_exti_set_irq_type;
++        gc->private = (void *)chip_data;
++
++        iowrite32(0x0, gc->reg_base + lingsi_bank->clr);
++    }
++    nr_irqs = of_irq_count(node);
++    for (i = 0; i < nr_irqs; i++) {
++        unsigned int irq = irq_of_parse_and_map(node, i);
++        irq_set_handler_data(irq, domain);
++        irq_set_chained_handler(irq, lingsi_irq_handler);
++    }
++    return 0;
++
++out_free_domain:
++    irq_domain_remove(domain);
++out_unmap:
++    iounmap(host_data->base);
++    kfree(host_data->chips_data);
++    kfree(host_data);
++    return ret;
++}
++
++static int __init lingsi_exti_of_init(struct device_node *np,
++                       struct device_node *parent)
++{
++    return lingsi_exti_init(&lingsi_drv_data, np);
++}
++
++IRQCHIP_DECLARE(lingsi_exti, "lingsi,exti-intc", lingsi_exti_of_init);
+diff --git a/drivers/irqchip/irq-lingsi-peri.c b/drivers/irqchip/irq-lingsi-peri.c
+new file mode 100644
+index 000000000000..6d0c6a24cd35
+--- /dev/null
++++ b/drivers/irqchip/irq-lingsi-peri.c
+@@ -0,0 +1,324 @@
++#include <linux/bitops.h>
++#include <linux/delay.h>
++#include <linux/hwspinlock.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/irq.h>
++#include <linux/irqchip.h>
++#include <linux/irqchip/chained_irq.h>
++#include <linux/irqdomain.h>
++#include <linux/module.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/of_platform.h>
++#include <linux/syscore_ops.h>
++#include <linux/mfd/syscon.h>
++#include <linux/regmap.h>
++
++#define IRQS_PER_BANK 32
++
++#define LINGSI_PERI_CTRL   0x1C
++#define LINGSI_PERI_MASK0  0x20
++#define LINGSI_PERI_MASK1  0x24
++#define LINGSI_PERI_CLR0   0x28
++#define LINGSI_PERI_CLR1   0x2C
++#define LINGSI_PERI_STT0   0x30
++#define LINGSI_PERI_STT1   0x34
++#define LINGSI_PERI_RAW0   0x38
++#define LINGSI_PERI_RAW1   0x3C
++
++struct lingsi_peri_bank {
++    uint32_t ctrl ;
++    uint32_t mask;
++    uint32_t clr ;
++    uint32_t stt ;
++    uint32_t raw ;
++};
++
++struct lingsi_peri_drv_data {
++    const struct lingsi_peri_bank **peri_banks;
++    const u8 *desc_irqs;
++    u32 bank_nr;
++};
++
++struct lingsi_peri_chip_data {
++    struct lingsi_peri_host_data *host_data;
++    const struct lingsi_peri_bank *reg_bank;
++    struct raw_spinlock rlock;
++};
++
++struct lingsi_peri_host_data {
++    void __iomem *base;
++    struct lingsi_peri_chip_data *chips_data;
++    const struct lingsi_peri_drv_data *drv_data;
++    struct hwspinlock *hwlock;
++};
++
++static struct lingsi_peri_host_data *lingsi_host_data;
++
++static const struct lingsi_peri_bank lingsiraptor_peri_b1 = {
++    .ctrl = LINGSI_PERI_CTRL,
++    .mask = LINGSI_PERI_MASK0,
++    .clr  = LINGSI_PERI_CLR0,
++    .stt  = LINGSI_PERI_STT0,
++    .raw  = LINGSI_PERI_RAW0,
++};
++
++static const struct lingsi_peri_bank lingsiraptor_peri_b2 = {
++    .ctrl = LINGSI_PERI_CTRL,
++    .mask = LINGSI_PERI_MASK1,
++    .clr  = LINGSI_PERI_CLR1,
++    .stt  = LINGSI_PERI_STT1,
++    .raw  = LINGSI_PERI_RAW1,
++};
++
++static const struct lingsi_peri_bank *lingsiraptor_peri_banks[] = {
++    &lingsiraptor_peri_b1,
++    &lingsiraptor_peri_b2,
++};
++
++static const struct lingsi_peri_drv_data lingsi_raptor_drv_data = {
++    .peri_banks = lingsiraptor_peri_banks,
++    .bank_nr = ARRAY_SIZE(lingsiraptor_peri_banks),
++};
++
++static unsigned long lingsi_peri_pending(struct irq_chip_generic *gc)
++{
++    struct lingsi_peri_chip_data *chip_data = gc->private;
++    void __iomem *base = chip_data->host_data->base;
++    const struct lingsi_peri_bank *lingsi_bank = chip_data->reg_bank;
++    unsigned long pending = 0;
++    pending = readl_relaxed(base + lingsi_bank->stt);
++
++    return pending;
++}
++
++static void lingsi_irq_handler(struct irq_desc *desc)
++{
++    struct irq_domain *domain = irq_desc_get_handler_data(desc);
++    struct irq_chip *chip = irq_desc_get_chip(desc);
++    unsigned int nbanks = domain->gc->num_chips;
++    struct irq_chip_generic *gc;
++    unsigned long pending;
++    int n, i, irq_base = 0;
++    chained_irq_enter(chip, desc);
++
++    for (i = 0; i < nbanks; i++, irq_base += IRQS_PER_BANK) {
++        gc = irq_get_domain_generic_chip(domain, irq_base);
++        while ((pending = lingsi_peri_pending(gc))) {
++            if (pending) {
++                for_each_set_bit(n, &(pending), IRQS_PER_BANK) {
++                    generic_handle_domain_irq(domain, irq_base + n);
++                }
++            }
++         }
++    }
++
++    chained_irq_exit(chip, desc);
++}
++
++static int lingsi_peri_alloc(struct irq_domain *d, unsigned int virq,
++                unsigned int nr_irqs, void *data)
++{
++    struct irq_fwspec *fwspec = data;
++    irq_hw_number_t hwirq;
++    hwirq = fwspec->param[0];
++
++    irq_map_generic_chip(d, virq, hwirq);
++    return 0;
++}
++
++static void lingsi_peri_free(struct irq_domain *d, unsigned int virq,
++                unsigned int nr_irqs)
++{
++    struct irq_data *data = irq_domain_get_irq_data(d, virq);
++    irq_domain_reset_irq_data(data);
++}
++
++static const struct irq_domain_ops irq_peri_domain_ops = {
++    .map    = irq_map_generic_chip,
++    .alloc  = lingsi_peri_alloc,
++    .free   = lingsi_peri_free,
++};
++
++static struct
++lingsi_peri_host_data *lingsi_peri_host_init(const struct lingsi_peri_drv_data *dd,
++                       struct device_node *node)
++{
++    struct lingsi_peri_host_data *host_data;
++    host_data = kzalloc(sizeof(*host_data), GFP_KERNEL);
++    if (!host_data)
++        return NULL;
++
++    host_data->drv_data = dd;
++    host_data->chips_data = kcalloc(dd->bank_nr,
++                    sizeof(struct lingsi_peri_chip_data),
++                    GFP_KERNEL);
++    if (!host_data->chips_data)
++        goto free_host_data;
++
++    host_data->base = of_iomap(node, 0);
++    if (!host_data->base) {
++        pr_err("%pOF: Unable to map registers\n", node);
++        goto free_chips_data;
++    }
++
++    lingsi_host_data = host_data;
++
++    return host_data;
++
++free_chips_data:
++    kfree(host_data->chips_data);
++free_host_data:
++    kfree(host_data);
++
++    return NULL;
++}
++
++static struct
++lingsi_peri_chip_data *lingsi_peri_chip_init(struct lingsi_peri_host_data *h_data,
++                       u32 bank_idx,
++                       struct device_node *node)
++{
++    const struct lingsi_peri_bank *lingsi_bank;
++    struct lingsi_peri_chip_data *chip_data;
++    lingsi_bank = h_data->drv_data->peri_banks[bank_idx];
++    chip_data = &h_data->chips_data[bank_idx];
++    chip_data->host_data = h_data;
++    chip_data->reg_bank = lingsi_bank;
++
++    raw_spin_lock_init(&chip_data->rlock);
++
++    pr_info("%pOF: bank%d\n", node, bank_idx);
++
++    return chip_data;
++}
++
++static int lingsi_irq_set_irqchip_state(struct irq_data *d,
++                     enum irqchip_irq_state which, bool val)
++{
++    struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
++    struct lingsi_peri_chip_data *chip_data = gc->private;
++    void __iomem *base = chip_data->host_data->base;
++    const struct lingsi_peri_bank *lingsi_bank = chip_data->reg_bank;
++    uint32_t hwirq = irqd_to_hwirq(d) % IRQS_PER_BANK;
++
++    switch (which) {
++    case IRQCHIP_STATE_PENDING:
++        if (!val) {
++            iowrite32(BIT(hwirq), base + lingsi_bank->clr);
++        }
++        break;
++
++    case IRQCHIP_STATE_MASKED:
++        iowrite32(BIT(hwirq), base + lingsi_bank->mask);
++        break;
++
++    default:
++        return -EINVAL;
++    }
++
++    return 0;
++}
++
++static int lingsi_irq_get_irqchip_state(struct irq_data *d,
++                     enum irqchip_irq_state which, bool *val)
++{
++    struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
++    struct lingsi_peri_chip_data *chip_data = gc->private;
++    void __iomem *base = chip_data->host_data->base;
++    const struct lingsi_peri_bank *lingsi_bank = chip_data->reg_bank;
++    uint32_t hwirq = irqd_to_hwirq(d) % IRQS_PER_BANK;
++    unsigned long data;
++
++    irq_gc_lock(gc);
++
++    switch (which) {
++    case IRQCHIP_STATE_PENDING:
++        data = ioread32(base + lingsi_bank->raw);
++        *val = test_bit(hwirq, &data);
++        break;
++
++    case IRQCHIP_STATE_MASKED:
++        data = ioread32(base + lingsi_bank->mask);
++        *val = test_bit(hwirq, &data);
++        break;
++
++    default:
++        return -EINVAL;
++    }
++
++    irq_gc_unlock(gc);
++    return 0;
++}
++
++static int __init lingsi_peri_init(const struct lingsi_peri_drv_data *drv_data,
++                  struct device_node *node)
++{
++    struct lingsi_peri_host_data *host_data;
++    unsigned int clr = IRQ_NOREQUEST | IRQ_NOPROBE | IRQ_NOAUTOEN;
++    int nr_irqs, ret, i;
++    struct irq_chip_generic *gc;
++    struct irq_domain *domain;
++    host_data = lingsi_peri_host_init(drv_data, node);
++    if (!host_data)
++        return -ENOMEM;
++
++    domain = irq_domain_add_linear(node, drv_data->bank_nr * IRQS_PER_BANK,
++                       &irq_peri_domain_ops, NULL);
++    if (!domain) {
++        pr_err("%pOFn: Could not register interrupt domain.\n",
++               node);
++        ret = -ENOMEM;
++        goto out_unmap;
++    }
++
++    ret = irq_alloc_domain_generic_chips(domain, IRQS_PER_BANK, 1, "lingsi_peri",
++                         handle_edge_irq, clr, 0, 0);
++    if (ret) {
++        pr_err("%pOF: Could not allocate generic interrupt chip.\n",
++               node);
++        goto out_free_domain;
++    }
++
++    for (i = 0; i < drv_data->bank_nr; i++) {
++        const struct lingsi_peri_bank *lingsi_bank;
++        struct lingsi_peri_chip_data *chip_data;
++        lingsi_bank = drv_data->peri_banks[i];
++        chip_data = lingsi_peri_chip_init(host_data, i, node);
++        gc = irq_get_domain_generic_chip(domain, i * IRQS_PER_BANK);
++        gc->reg_base = host_data->base;
++        gc->chip_types->type = IRQ_TYPE_EDGE_BOTH;
++        gc->chip_types->chip.irq_unmask = irq_gc_mask_set_bit;
++        gc->chip_types->chip.irq_mask = irq_gc_mask_clr_bit;
++        gc->chip_types->chip.irq_ack = irq_gc_ack_set_bit;
++        gc->chip_types->chip.irq_get_irqchip_state = lingsi_irq_get_irqchip_state,
++        gc->chip_types->chip.irq_set_irqchip_state = lingsi_irq_set_irqchip_state,
++        gc->chip_types->regs.mask = lingsi_bank->mask;
++        gc->chip_types->regs.ack = lingsi_bank->clr;
++        gc->private = (void *)chip_data;
++    }
++    nr_irqs = of_irq_count(node);
++    for (i = 0; i < nr_irqs; i++) {
++        unsigned int irq = irq_of_parse_and_map(node, i);
++        irq_set_handler_data(irq, domain);
++        irq_set_chained_handler(irq, lingsi_irq_handler);
++    }
++    return 0;
++
++out_free_domain:
++    irq_domain_remove(domain);
++out_unmap:
++    iounmap(host_data->base);
++    kfree(host_data->chips_data);
++    kfree(host_data);
++    return ret;
++}
++
++static int __init lingsi_peri_of_init(struct device_node *np,
++                       struct device_node *parent)
++{
++    return lingsi_peri_init(&lingsi_raptor_drv_data, np);
++}
++
++IRQCHIP_DECLARE(lingsi_peri, "lingsi,peri-intc", lingsi_peri_of_init);
+diff --git a/drivers/pinctrl/Kconfig b/drivers/pinctrl/Kconfig
+index 7dfb7190580e..9918c0c46758 100644
+--- a/drivers/pinctrl/Kconfig
++++ b/drivers/pinctrl/Kconfig
+@@ -533,5 +533,6 @@ source "drivers/pinctrl/ti/Kconfig"
+ source "drivers/pinctrl/uniphier/Kconfig"
+ source "drivers/pinctrl/visconti/Kconfig"
+ source "drivers/pinctrl/vt8500/Kconfig"
++source "drivers/pinctrl/lingsi/Kconfig"
+ 
+ endif
+diff --git a/drivers/pinctrl/Makefile b/drivers/pinctrl/Makefile
+index dd6cda270294..d203b76cf645 100644
+--- a/drivers/pinctrl/Makefile
++++ b/drivers/pinctrl/Makefile
+@@ -79,3 +79,4 @@ obj-y				+= ti/
+ obj-$(CONFIG_PINCTRL_UNIPHIER)	+= uniphier/
+ obj-$(CONFIG_PINCTRL_VISCONTI)	+= visconti/
+ obj-$(CONFIG_ARCH_VT8500)	+= vt8500/
++obj-y	+= lingsi/
+diff --git a/drivers/pinctrl/lingsi/Kconfig b/drivers/pinctrl/lingsi/Kconfig
+new file mode 100644
+index 000000000000..9e3015f8638b
+--- /dev/null
++++ b/drivers/pinctrl/lingsi/Kconfig
+@@ -0,0 +1,18 @@
++# SPDX-License-Identifier: GPL-2.0-only
++if ARCH_LINGSI || COMPILE_TEST
++
++config PINCTRL_LINGSI
++    bool
++    depends on OF
++    select PINMUX
++    select GENERIC_PINCONF
++    select GPIOLIB
++    select IRQ_DOMAIN_HIERARCHY
++    select MFD_SYSCON
++
++config PINCTRL_LINGSI_RAPTOR
++    bool "LINGSI_RAPTOR pin control" if COMPILE_TEST
++    depends on OF && HAS_IOMEM
++    select PINCTRL_LINGSI
++
++endif
+diff --git a/drivers/pinctrl/lingsi/Makefile b/drivers/pinctrl/lingsi/Makefile
+new file mode 100644
+index 000000000000..01d65f2a7846
+--- /dev/null
++++ b/drivers/pinctrl/lingsi/Makefile
+@@ -0,0 +1,6 @@
++# SPDX-License-Identifier: GPL-2.0
++# Core
++obj-$(CONFIG_PINCTRL_LINGSI) += pinctrl-lingsi.o
++
++# SoC Drivers
++obj-$(CONFIG_PINCTRL_LINGSI_RAPTOR)	+= pinctrl-lingsi-raptor.o
+diff --git a/drivers/pinctrl/lingsi/pinctrl-lingsi-raptor.c b/drivers/pinctrl/lingsi/pinctrl-lingsi-raptor.c
+new file mode 100644
+index 000000000000..9788aa619614
+--- /dev/null
++++ b/drivers/pinctrl/lingsi/pinctrl-lingsi-raptor.c
+@@ -0,0 +1,834 @@
++#include <linux/init.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#include "pinctrl-lingsi.h"
++
++#define ALTERNATIVE_FUNCTION_ALL                   \
++    LINGSI_FUNCTION(LINGSI_GPTIMA1_CH1,  "GPTIMA1_CH1"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMA1_CH2,  "GPTIMA1_CH2"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMA1_CH3,  "GPTIMA1_CH3"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMA1_CH4,  "GPTIMA1_CH4"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMA1_ETR,  "GPTIMA1_ETR"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMA2_CH1,  "GPTIMA2_CH1"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMA2_CH2,  "GPTIMA2_CH2"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMA2_CH3,  "GPTIMA2_CH3"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMA2_CH4,  "GPTIMA2_CH4"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMA2_ETR,  "GPTIMA2_ETR"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMB1_CH1,  "GPTIMB1_CH1"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMB1_CH2,  "GPTIMB1_CH2"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMB1_CH3,  "GPTIMB1_CH3"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMB1_CH4,  "GPTIMB1_CH4"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMB1_ETR,  "GPTIMB1_ETR"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMC1_CH1,  "GPTIMC1_CH1"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMC1_CH1N, "GPTIMC1_CH1N"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMC1_CH2,  "GPTIMC1_CH2"), \
++    LINGSI_FUNCTION(LINGSI_GPTIMC1_BK,   "GPTIMC1_BK"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM1_CH1,   "ADTIM1_CH1"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM1_CH1N,  "ADTIM1_CH1N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM1_CH2,   "ADTIM1_CH2"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM1_CH2N,  "ADTIM1_CH2N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM1_CH3,   "ADTIM1_CH3"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM1_CH3N,  "ADTIM1_CH3N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM1_CH4,   "ADTIM1_CH4"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM1_ETR,   "ADTIM1_ETR"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM1_BK,    "ADTIM1_BK"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM2_CH1,   "ADTIM2_CH1"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM2_CH1N,  "ADTIM2_CH1N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM2_CH2,   "ADTIM2_CH2"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM2_CH2N,  "ADTIM2_CH2N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM2_CH3,   "ADTIM2_CH3"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM2_CH3N,  "ADTIM2_CH3N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM2_CH4,   "ADTIM2_CH4"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM2_ETR,   "ADTIM2_ETR"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM2_BK,    "ADTIM2_BK"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM3_CH1,   "ADTIM3_CH1"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM3_CH1N,  "ADTIM3_CH1N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM3_CH2,   "ADTIM3_CH2"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM3_CH2N,  "ADTIM3_CH2N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM3_CH3,   "ADTIM3_CH3"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM3_CH3N,  "ADTIM3_CH3N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM3_CH4,   "ADTIM3_CH4"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM3_ETR,   "ADTIM3_ETR"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM3_BK,    "ADTIM3_BK"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM4_CH1,   "ADTIM4_CH1"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM4_CH1N,  "ADTIM4_CH1N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM4_CH2,   "ADTIM4_CH2"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM4_CH2N,  "ADTIM4_CH2N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM4_CH3,   "ADTIM4_CH3"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM4_CH3N,  "ADTIM4_CH3N"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM4_CH4,   "ADTIM4_CH4"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM4_ETR,   "ADTIM4_ETR"), \
++    LINGSI_FUNCTION(LINGSI_ADTIM4_BK,    "ADTIM4_BK"), \
++    LINGSI_FUNCTION(LINGSI_I2C1_SCL,     "I2C1_SCL"), \
++    LINGSI_FUNCTION(LINGSI_I2C1_SDA,     "I2C1_SDA"), \
++    LINGSI_FUNCTION(LINGSI_I2C1_SMBA,    "I2C1_SMBA"), \
++    LINGSI_FUNCTION(LINGSI_I2C2_SCL,     "I2C2_SCL"), \
++    LINGSI_FUNCTION(LINGSI_I2C2_SDA,     "I2C2_SDA"), \
++    LINGSI_FUNCTION(LINGSI_I2C2_SMBA,    "I2C2_SMBA"), \
++    LINGSI_FUNCTION(LINGSI_I2C3_SDA,     "I2C3_SDA"), \
++    LINGSI_FUNCTION(LINGSI_I2C3_SCL,     "I2C3_SCL"), \
++    LINGSI_FUNCTION(LINGSI_I2C3_SMBA,    "I2C3_SMBA"), \
++    LINGSI_FUNCTION(LINGSI_I2C4_SCL,     "I2C4_SCL"), \
++    LINGSI_FUNCTION(LINGSI_I2C4_SDA,     "I2C4_SDA"), \
++    LINGSI_FUNCTION(LINGSI_I2C4_SMBA,    "I2C4_SMBA"), \
++    LINGSI_FUNCTION(LINGSI_I2C5_SCL,     "I2C5_SCL"), \
++    LINGSI_FUNCTION(LINGSI_I2C5_SDA,     "I2C5_SDA"), \
++    LINGSI_FUNCTION(LINGSI_I2C5_SMBA,    "I2C5_SMBA"), \
++    LINGSI_FUNCTION(LINGSI_I2C6_SDA,     "I2C6_SDA"), \
++    LINGSI_FUNCTION(LINGSI_I2C6_SCL,     "I2C6_SCL"), \
++    LINGSI_FUNCTION(LINGSI_I2C6_SMBA,    "I2C6_SMBA"), \
++    LINGSI_FUNCTION(LINGSI_UART1_TXD,    "UART1_TXD"), \
++    LINGSI_FUNCTION(LINGSI_UART1_RXD,    "UART1_RXD"), \
++    LINGSI_FUNCTION(LINGSI_UART1_CTSN,   "UART1_CTSN"), \
++    LINGSI_FUNCTION(LINGSI_UART1_RTSN,   "UART1_RTSN"), \
++    LINGSI_FUNCTION(LINGSI_UART1_CK,     "UART1_CK"), \
++    LINGSI_FUNCTION(LINGSI_UART2_TXD,    "UART2_TXD"), \
++    LINGSI_FUNCTION(LINGSI_UART2_RXD,    "UART2_RXD"), \
++    LINGSI_FUNCTION(LINGSI_UART2_CTSN,   "UART2_CTSN"), \
++    LINGSI_FUNCTION(LINGSI_UART2_RTSN,   "UART2_RTSN"), \
++    LINGSI_FUNCTION(LINGSI_UART3_TXD,    "UART3_TXD"), \
++    LINGSI_FUNCTION(LINGSI_UART3_RXD,    "UART3_RXD"), \
++    LINGSI_FUNCTION(LINGSI_UART3_CTSN,   "UART3_CTSN"), \
++    LINGSI_FUNCTION(LINGSI_UART3_RTSN,   "UART3_RTSN"), \
++    LINGSI_FUNCTION(LINGSI_DWUART1_TXD,  "DWUART1_TXD"), \
++    LINGSI_FUNCTION(LINGSI_DWUART1_RXD,  "DWUART1_RXD"), \
++    LINGSI_FUNCTION(LINGSI_DWUART1_CTSN, "DWUART1_CTSN"), \
++    LINGSI_FUNCTION(LINGSI_DWUART1_RTSN, "DWUART1_RTSN"), \
++    LINGSI_FUNCTION(LINGSI_DWUART1_DE,   "DWUART1_DE"), \
++    LINGSI_FUNCTION(LINGSI_DWUART1_RE,   "DWUART1_RE"), \
++    LINGSI_FUNCTION(LINGSI_DWUART2_TXD,  "DWUART2_TXD"), \
++    LINGSI_FUNCTION(LINGSI_DWUART2_RXD,  "DWUART2_RXD"), \
++    LINGSI_FUNCTION(LINGSI_DWUART2_CTSN, "DWUART2_CTSN"), \
++    LINGSI_FUNCTION(LINGSI_DWUART2_RTSN, "DWUART2_RTSN"), \
++    LINGSI_FUNCTION(LINGSI_DWUART2_DE,   "DWUART2_DE"), \
++    LINGSI_FUNCTION(LINGSI_DWUART2_RE,   "DWUART2_RE"), \
++    LINGSI_FUNCTION(LINGSI_SPI1_NSS0,    "SPI1_NSS0"), \
++    LINGSI_FUNCTION(LINGSI_SPI1_NSS1,    "SPI1_NSS1"), \
++    LINGSI_FUNCTION(LINGSI_SPI1_SCK,     "SPI1_SCK"), \
++    LINGSI_FUNCTION(LINGSI_SPI1_DQ0,     "SPI1_DQ0"), \
++    LINGSI_FUNCTION(LINGSI_SPI1_DQ1,     "SPI1_DQ1"), \
++    LINGSI_FUNCTION(LINGSI_SPI1_DQ2,     "SPI1_DQ2"), \
++    LINGSI_FUNCTION(LINGSI_SPI1_DQ3,     "SPI1_DQ3"), \
++    LINGSI_FUNCTION(LINGSI_SPI2_SCK,     "SPI2_SCK"), \
++    LINGSI_FUNCTION(LINGSI_SPI2_NSS,     "SPI2_NSS"), \
++    LINGSI_FUNCTION(LINGSI_SPI2_MOSI,    "SPI2_MOSI"), \
++    LINGSI_FUNCTION(LINGSI_SPI2_MISO,    "SPI2_MISO"), \
++    LINGSI_FUNCTION(LINGSI_SPI2_I2S,     "SPI2_I2S"), \
++    LINGSI_FUNCTION(LINGSI_SPI3_SCK,     "SPI3_SCK"), \
++    LINGSI_FUNCTION(LINGSI_SPI3_NSS,     "SPI3_NSS"), \
++    LINGSI_FUNCTION(LINGSI_SPI3_MOSI,    "SPI3_MOSI"), \
++    LINGSI_FUNCTION(LINGSI_SPI3_MISO,    "SPI3_MISO"), \
++    LINGSI_FUNCTION(LINGSI_SPI3_I2S,     "SPI3_I2S"), \
++    LINGSI_FUNCTION(LINGSI_PDM_CLK,      "PDM_CLK"), \
++    LINGSI_FUNCTION(LINGSI_PDM_DATA0,    "PDM_DATA0"), \
++    LINGSI_FUNCTION(LINGSI_PDM_DATA1,    "PDM_DATA1"), \
++    LINGSI_FUNCTION(LINGSI_PIS_CH0,      "PIS_CH0"), \
++    LINGSI_FUNCTION(LINGSI_PIS_CH1,      "PIS_CH1"), \
++    LINGSI_FUNCTION(LINGSI_FDCAN_TXD,    "FDCAN_TXD"), \
++    LINGSI_FUNCTION(LINGSI_FDCAN_RXD,    "FDCAN_RXD"), \
++    LINGSI_FUNCTION(LINGSI_USB_DP,       "USB_DP"), \
++    LINGSI_FUNCTION(LINGSI_USB_DM,       "USB_DM"), \
++    LINGSI_FUNCTION(LINGSI_COMP1,        "COMP1"), \
++    LINGSI_FUNCTION(LINGSI_COMP2,        "COMP2"), \
++    LINGSI_FUNCTION(LINGSI_COMP3,        "COMP3"), \
++    LINGSI_FUNCTION(LINGSI_PWM1,         "PWM1"), \
++    LINGSI_FUNCTION(LINGSI_PWM2,         "PWM2"), \
++    LINGSI_FUNCTION(LINGSI_PWM3,         "PWM3"), \
++    LINGSI_FUNCTION(LINGSI_PWM4,         "PWM4"), \
++    LINGSI_FUNCTION(LINGSI_PWM5,         "PWM5"), \
++    LINGSI_FUNCTION(LINGSI_PWM6,         "PWM6"), \
++    LINGSI_FUNCTION(LINGSI_PWM7,         "PWM7"), \
++    LINGSI_FUNCTION(LINGSI_PWM8,         "PWM8"), \
++    LINGSI_FUNCTION(LINGSI_CAP1,         "CAP1"), \
++    LINGSI_FUNCTION(LINGSI_CAP2,         "CAP2"), \
++    LINGSI_FUNCTION(LINGSI_CAP3,         "CAP3"), \
++    LINGSI_FUNCTION(LINGSI_CAP4,         "CAP4"), \
++    LINGSI_FUNCTION(LINGSI_CAP5,         "CAP5"), \
++    LINGSI_FUNCTION(LINGSI_CAP6,         "CAP6"), \
++    LINGSI_FUNCTION(LINGSI_CAP7,         "CAP7"), \
++    LINGSI_FUNCTION(LINGSI_CAP8,         "CAP8"), \
++    LINGSI_FUNCTION(LINGSI_OWM,          "OWM"), \
++    LINGSI_FUNCTION(LINGSI_PS2H1_CLK,    "PS2H1_CLK"), \
++    LINGSI_FUNCTION(LINGSI_PS2H1_DAT,    "PS2H1_DAT"), \
++    LINGSI_FUNCTION(LINGSI_PS2H2_CLK,    "PS2H2_CLK"), \
++    LINGSI_FUNCTION(LINGSI_PS2H2_DAT,    "PS2H2_DAT"), \
++    LINGSI_FUNCTION(LINGSI_PS2H3_CLK,    "PS2H3_CLK"), \
++    LINGSI_FUNCTION(LINGSI_PS2H3_DAT,    "PS2H3_DAT"), \
++    LINGSI_FUNCTION(LINGSI_PS2H4_CLK,    "PS2H4_CLK"), \
++    LINGSI_FUNCTION(LINGSI_PS2H4_DAT,    "PS2H4_DAT"), \
++    LINGSI_FUNCTION(LINGSI_CEC,          "CEC"), \
++    LINGSI_FUNCTION(LINGSI_PECI,         "PECI"), \
++    LINGSI_FUNCTION(LINGSI_I2C_DBG_SCL,  "I2C_DBG_SCL"), \
++    LINGSI_FUNCTION(LINGSI_I2C_DBG_SDA,  "I2C_DBG_SDA"), \
++    LINGSI_FUNCTION(LINGSI_USB_CID,      "USB_CID"),
++
++static const struct lingsi_desc_pin lingsi_raptor_pins[] = {
++    LINGSI_PIN(
++        PINCTRL_PIN(0, "PA0"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA0"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(1, "PA1"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA1"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(2, "PA2"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA2"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(3, "PA3"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA3"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(4, "PA4"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA4"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(5, "PA5"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA5"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(6, "PA6"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA6"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(7, "PA7"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA7"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(8, "PA8"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA8"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(9, "PA9"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA9"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(10, "PA10"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA10"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(11, "PA11"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA11"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(12, "PA12"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA12"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(13, "PA13"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA13"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(14, "PA14"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA14"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(15, "PA15"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOA15"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(16, "PB0"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB0"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(17, "PB1"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB1"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(18, "PB2"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB2"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(19, "PB3"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB3"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(20, "PB4"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB4"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(21, "PB5"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB5"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(22, "PB6"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB6"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(23, "PB7"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB7"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(24, "PB8"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB8"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(25, "PB9"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB9"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(26, "PB10"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB10"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(27, "PB11"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB11"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(28, "PB12"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB12"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(29, "PB13"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB13"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(30, "PB14"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB14"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(31, "PB15"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOB15"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(32, "PC0"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC0"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(33, "PC1"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC1"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(34, "PC2"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC2"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(35, "PC3"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC3"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(36, "PC4"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC4"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(37, "PC5"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC5"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(38, "PC6"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC6"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(39, "PC7"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC7"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(40, "PC8"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC8"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(41, "PC9"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC9"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(42, "PC10"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC10"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(43, "PC11"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC11"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(44, "PC12"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC12"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(45, "PC13"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC13"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(46, "PC14"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC14"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(47, "PC15"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOC15"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(48, "PD0"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD0"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(49, "PD1"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD1"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(50, "PD2"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD2"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(51, "PD3"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD3"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(52, "PD4"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD4"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(53, "PD5"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD5"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(54, "PD6"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD6"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(55, "PD7"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD7"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(56, "PD8"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD8"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(57, "PD9"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD9"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(58, "PD10"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD10"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(59, "PD11"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD11"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(60, "PD12"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD12"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(61, "PD13"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD13"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(62, "PD14"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD14"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(63, "PD15"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOD15"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(64, "PE0"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE0"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(65, "PE1"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE1"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(66, "PE2"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE2"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(67, "PE3"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE3"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(68, "PE4"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE4"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(69, "PE5"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE5"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(70, "PE6"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE6"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(71, "PE7"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE7"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(72, "PE8"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE8"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(73, "PE9"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE9"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(74, "PE10"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE10"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(75, "PE11"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE11"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(76, "PE12"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE12"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(77, "PE13"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE13"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(78, "PE14"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE14"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(79, "PE15"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOE15"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(80, "PF0"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF0"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(81, "PF1"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF1"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(82, "PF2"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF2"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(83, "PF3"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF3"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(84, "PF4"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF4"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(85, "PF5"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF5"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(86, "PF6"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF6"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(87, "PF7"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF7"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(88, "PF8"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF8"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(89, "PF9"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF9"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(90, "PF10"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF10"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(91, "PF11"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF11"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(92, "PF12"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF12"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(93, "PF13"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF13"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(94, "PF14"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF14"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(95, "PF15"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOF15"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(96, "PG0"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG0"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(97, "PG1"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG1"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(98, "PG2"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG2"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(99, "PG3"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG3"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(100, "PG4"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG4"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(101, "PG5"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG5"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(102, "PG6"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG6"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(103, "PG7"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG7"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(104, "PG8"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG8"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(105, "PG9"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG9"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(106, "PG10"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG10"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(107, "PG11"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG11"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(108, "PG12"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG12"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(109, "PG13"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG13"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(110, "PG14"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG14"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(111, "PG15"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOG15"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(112, "PH0"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH0"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(113, "PH1"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH1"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(114, "PH2"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH2"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(115, "PH3"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH3"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(116, "PH4"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH4"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(117, "PH5"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH5"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(118, "PH6"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH6"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(119, "PH7"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH7"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(120, "PH8"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH8"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(121, "PH9"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH9"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(122, "PH10"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH10"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(123, "PH11"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH11"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(124, "PH12"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH12"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(125, "PH13"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH13"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(126, "PH14"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH14"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++    LINGSI_PIN(
++        PINCTRL_PIN(127, "PH15"),
++        LINGSI_FUNCTION(LINGSI_GPIO, "GPIOH15"),
++        ALTERNATIVE_FUNCTION_ALL
++    ),
++};
++
++static struct lingsi_pinctrl_match_data lingsi_raptor_match_data = {
++    .pins = lingsi_raptor_pins,
++    .npins = ARRAY_SIZE(lingsi_raptor_pins),
++};
++
++static const struct of_device_id lingsi_raptor_pctrl_match[] = {
++    {
++        .compatible = "lingsi,pinctrl-raptor",
++        .data = &lingsi_raptor_match_data,
++    },
++    { }
++};
++
++static struct platform_driver lingsi_raptor_pinctrl_driver = {
++    .probe = lingsi_pctl_probe,
++    .driver = {
++        .name = "pinctrl-raptor",
++        .of_match_table = lingsi_raptor_pctrl_match,
++    },
++};
++
++static int __init lingsi_raptor_pinctrl_init(void)
++{
++    return platform_driver_register(&lingsi_raptor_pinctrl_driver);
++}
++arch_initcall(lingsi_raptor_pinctrl_init);
+diff --git a/drivers/pinctrl/lingsi/pinctrl-lingsi.c b/drivers/pinctrl/lingsi/pinctrl-lingsi.c
+new file mode 100644
+index 000000000000..de2f56e58c1e
+--- /dev/null
++++ b/drivers/pinctrl/lingsi/pinctrl-lingsi.c
+@@ -0,0 +1,1209 @@
++// SPDX-License-Identifier: GPL-2.0
++//
++// Copyright (C) 2024 linkedsemi
++//   Author: Hunter Liu <htliu@linkedsemi.com>
++
++#include <linux/clk.h>
++#include <linux/gpio/driver.h>
++#include <linux/hwspinlock.h>
++#include <linux/io.h>
++#include <linux/irq.h>
++#include <linux/mfd/syscon.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_device.h>
++#include <linux/of_irq.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/pinctrl/machine.h>
++#include <linux/pinctrl/pinconf.h>
++#include <linux/pinctrl/pinconf-generic.h>
++#include <linux/pinctrl/pinctrl.h>
++#include <linux/pinctrl/pinmux.h>
++#include <linux/platform_device.h>
++#include <linux/seq_file.h>
++#include <linux/property.h>
++#include <linux/regmap.h>
++#include <linux/reset.h>
++#include <linux/slab.h>
++
++#include "../core.h"
++#include "../pinconf.h"
++#include "../pinctrl-utils.h"
++#include "pinctrl-lingsi.h"
++#include <linux/gpio/consumer.h>
++
++#define LINGSI_PER_FUNC_SEL 0x20
++
++#define LINGSI_GPIO_PIN_SEL0 0x40
++#define LINGSI_GPIO_PIN_SEL1 0x44
++#define LINGSI_GPIO_PIN_SEL2 0x48
++#define LINGSI_GPIO_PIN_SEL3 0x4c
++#define LINGSI_GPIO_PIN_SEL4 0x50
++#define LINGSI_GPIO_PIN_SEL5 0x54
++
++#define LINGSI_GPIO_BASE              0x60
++#define LINGSI_GPIO_REG_SIZE_PER_BANK 0x20
++
++#define LINGSI_GPIO_LVS_LOCK 0x00
++#define LINGSI_GPIO_DOT      0x04
++#define LINGSI_GPIO_PD_PU    0x08
++#define LINGSI_GPIO_IEN_OD   0x0c
++#define LINGSI_GPIO_DS       0x10
++#define LINGSI_GPIO_AE       0x14
++#define LINGSI_GPIO_OE_FIR   0x18
++#define LINGSI_GPIO_HSS_DIN  0x1c
++
++#define LINGSI_GPIO_DISABLE_PULL_UP_DOWN 0
++#define LINGSI_GPIO_PULL_UP              1
++#define LINGSI_GPIO_PULL_DOWN            2
++
++#define LINGSI_GPIO_PINS_PER_BANK     16
++
++#define HWSPNLCK_TIMEOUT 1000 /* usec */
++
++union pin_mode {
++    struct {
++        uint16_t
++            func_en : 1,
++            lock : 1,
++            lvs : 1,
++            dot_clr : 1,
++            dot_set : 1,
++            pd : 1,
++            pu : 1,
++            ien : 1,
++            od : 1,
++            ds1 : 1,
++            ds2 : 1,
++            ae1 : 1,
++            ae2 : 1,
++            oe : 1,
++            fir : 1,
++            hss : 1;
++    } mode;
++    uint16_t data;
++};
++
++union pin_mux {
++    struct {
++        uint16_t num;
++        uint16_t func;
++        union pin_mode flag; /* uint16_t */
++        union pin_mode mode; /* uint16_t */
++    } mux;
++    uint64_t data;
++};
++
++static const char *const lingsi_gpio_functions[] = {
++    "GPIO",
++    "GPTIMA1_CH1",
++    "GPTIMA1_CH2",
++    "GPTIMA1_CH3",
++    "GPTIMA1_CH4",
++    "GPTIMA1_ETR",
++    "GPTIMA2_CH1",
++    "GPTIMA2_CH2",
++    "GPTIMA2_CH3",
++    "GPTIMA2_CH4",
++    "GPTIMA2_ETR",
++    "GPTIMB1_CH1",
++    "GPTIMB1_CH2",
++    "GPTIMB1_CH3",
++    "GPTIMB1_CH4",
++    "GPTIMB1_ETR",
++    "GPTIMC1_CH1",
++    "GPTIMC1_CH1N",
++    "GPTIMC1_CH2",
++    "GPTIMC1_BK",
++    "ADTIM1_CH1",
++    "ADTIM1_CH1N",
++    "ADTIM1_CH2",
++    "ADTIM1_CH2N",
++    "ADTIM1_CH3",
++    "ADTIM1_CH3N",
++    "ADTIM1_CH4",
++    "ADTIM1_ETR",
++    "ADTIM1_BK",
++    "ADTIM2_CH1",
++    "ADTIM2_CH1N",
++    "ADTIM2_CH2",
++    "ADTIM2_CH2N",
++    "ADTIM2_CH3",
++    "ADTIM2_CH3N",
++    "ADTIM2_CH4",
++    "ADTIM2_ETR",
++    "ADTIM2_BK",
++    "ADTIM3_CH1",
++    "ADTIM3_CH1N",
++    "ADTIM3_CH2",
++    "ADTIM3_CH2N",
++    "ADTIM3_CH3",
++    "ADTIM3_CH3N",
++    "ADTIM3_CH4",
++    "ADTIM3_ETR",
++    "ADTIM3_BK",
++    "ADTIM4_CH1",
++    "ADTIM4_CH1N",
++    "ADTIM4_CH2",
++    "ADTIM4_CH2N",
++    "ADTIM4_CH3",
++    "ADTIM4_CH3N",
++    "ADTIM4_CH4",
++    "ADTIM4_ETR",
++    "ADTIM4_BK",
++    "I2C1_SCL",
++    "I2C1_SDA",
++    "I2C1_SMBA",
++    "I2C2_SCL",
++    "I2C2_SDA",
++    "I2C2_SMBA",
++    "I2C3_SDA",
++    "I2C3_SCL",
++    "I2C3_SMBA",
++    "I2C4_SCL",
++    "I2C4_SDA",
++    "I2C4_SMBA",
++    "I2C5_SCL",
++    "I2C5_SDA",
++    "I2C5_SMBA",
++    "I2C6_SDA",
++    "I2C6_SCL",
++    "I2C6_SMBA",
++    "UART1_TXD",
++    "UART1_RXD",
++    "UART1_CTSN",
++    "UART1_RTSN",
++    "UART1_CK",
++    "UART2_TXD",
++    "UART2_RXD",
++    "UART2_CTSN",
++    "UART2_RTSN",
++    "UART3_TXD",
++    "UART3_RXD",
++    "UART3_CTSN",
++    "UART3_RTSN",
++    "DWUART1_TXD",
++    "DWUART1_RXD",
++    "DWUART1_CTSN",
++    "DWUART1_RTSN",
++    "DWUART1_DE",
++    "DWUART1_RE",
++    "DWUART2_TXD",
++    "DWUART2_RXD",
++    "DWUART2_CTSN",
++    "DWUART2_RTSN",
++    "DWUART2_DE",
++    "DWUART2_RE",
++    "SPI1_NSS0",
++    "SPI1_NSS1",
++    "SPI1_SCK",
++    "SPI1_DQ0",
++    "SPI1_DQ1",
++    "SPI1_DQ2",
++    "SPI1_DQ3",
++    "SPI2_SCK",
++    "SPI2_NSS",
++    "SPI2_MOSI",
++    "SPI2_MISO",
++    "SPI2_I2S",
++    "SPI3_SCK",
++    "SPI3_NSS",
++    "SPI3_MOSI",
++    "SPI3_MISO",
++    "SPI3_I2S",
++    "PDM_CLK",
++    "PDM_DATA0",
++    "PDM_DATA1",
++    "PIS_CH0",
++    "PIS_CH1",
++    "FDCAN_TXD",
++    "FDCAN_RXD",
++    "USB_DP",
++    "USB_DM",
++    "COMP1",
++    "COMP2",
++    "COMP3",
++    "PWM1",
++    "PWM2",
++    "PWM3",
++    "PWM4",
++    "PWM5",
++    "PWM6",
++    "PWM7",
++    "PWM8",
++    "CAP1",
++    "CAP2",
++    "CAP3",
++    "CAP4",
++    "CAP5",
++    "CAP6",
++    "CAP7",
++    "CAP8",
++    "OWM",
++    "PS2H1_CLK",
++    "PS2H1_DAT",
++    "PS2H2_CLK",
++    "PS2H2_DAT",
++    "PS2H3_CLK",
++    "PS2H3_DAT",
++    "PS2H4_CLK",
++    "PS2H4_DAT",
++    "CEC",
++    "PECI",
++    "I2C_DBG_SCL",
++    "I2C_DBG_SDA",
++    "USB_CID",
++};
++
++struct lingsi_pinctrl_group {
++    const char *name;
++    unsigned long config;
++    unsigned pin;
++};
++
++struct lingsi_pinctrl {
++    struct device *dev;
++    struct pinctrl_dev *pctl_dev;
++    struct pinctrl_desc pctl_desc;
++    struct lingsi_pinctrl_group *groups;
++    unsigned ngroups;
++    const char **grp_names;
++    const struct lingsi_pinctrl_match_data *match_data;
++    struct regmap *sysc_awo_regmap;
++    struct regmap *sysc_per_regmap;
++    struct regmap *gpio_regmap;
++    union pin_mode *pflag;
++    union pin_mode *pmode;
++    spinlock_t lock;
++    struct hwspinlock *hwlock;
++    struct lingsi_desc_pin *pins;
++    uint32_t npins;
++    uint32_t pkg;
++};
++
++static inline uint32_t lingsi_gpio_pin(uint32_t gpio)
++{
++    return gpio % LINGSI_GPIO_PINS_PER_BANK;
++}
++
++static inline uint32_t lingsi_gpio_bank(uint32_t gpio)
++{
++    return gpio / LINGSI_GPIO_PINS_PER_BANK;
++}
++
++static inline uint32_t lingsi_gpio_bank_base(uint32_t bank)
++{
++    return bank * LINGSI_GPIO_REG_SIZE_PER_BANK;
++}
++
++static inline uint32_t lingsi_gpio_get_mode(uint32_t function)
++{
++    switch (function) {
++    case LINGSI_PIN_GPIO:
++        return MODE_GPIO;
++    case LINGSI_PIN_AF(AF_START)... LINGSI_PIN_AF(AF_END):
++        return MODE_ALTER_FUNC;
++    }
++
++    return 0;
++}
++
++static inline uint32_t lingsi_gpio_get_alt(uint32_t function)
++{
++    switch (function) {
++    case LINGSI_PIN_GPIO:
++        return MODE_GPIO;
++    case LINGSI_PIN_AF(AF_START)... LINGSI_PIN_AF(AF_END):
++        return function;
++    }
++
++    return 0;
++}
++
++/* GPIO functions */
++
++static inline void __lingsi_gpio_set(struct lingsi_pinctrl *pctl,
++                                     unsigned offset,
++                                     uint32_t value)
++{
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++
++    if (!value) {
++        pin += LINGSI_GPIO_PINS_PER_BANK;
++    }
++
++    regmap_set_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_DOT, BIT(pin));
++}
++
++/* Pinctrl functions */
++static struct lingsi_pinctrl_group *
++lingsi_pctrl_find_group_by_pin(struct lingsi_pinctrl *pctl, uint32_t pin)
++{
++    uint32_t i;
++
++    for (i = 0; i < pctl->ngroups; i++) {
++        struct lingsi_pinctrl_group *grp = pctl->groups + i;
++
++        if (grp->pin == pin)
++            return grp;
++    }
++
++    return NULL;
++}
++
++static bool lingsi_pctrl_is_function_valid(struct lingsi_pinctrl *pctl,
++                                           uint32_t pin_num,
++                                           uint32_t fnum)
++{
++    uint32_t i;
++    uint32_t k;
++
++    for (i = 0; i < pctl->npins; i++) {
++        const struct lingsi_desc_pin *pin = pctl->pins + i;
++        const struct lingsi_desc_function *func = pin->functions;
++
++        if (pin->pin.number != pin_num)
++            continue;
++
++        for (k = 0; k < LINGSI_CONFIG_NUM; k++) {
++            if (func->num == fnum)
++                return true;
++            func++;
++        }
++
++        break;
++    }
++
++    dev_err(pctl->dev, "invalid function %d on pin %d .\n", fnum, pin_num);
++
++    return false;
++}
++
++static uint32_t lingsi_pctrl_dt_node_to_map_func(struct lingsi_pinctrl *pctl,
++                                            uint32_t pin,
++                                            uint32_t fnum,
++                                            struct lingsi_pinctrl_group *grp,
++                                            struct pinctrl_map **map,
++                                            unsigned *reserved_maps,
++                                            unsigned *num_maps)
++{
++    if (*num_maps == *reserved_maps)
++        return -ENOSPC;
++
++    (*map)[*num_maps].type = PIN_MAP_TYPE_MUX_GROUP;
++    (*map)[*num_maps].data.mux.group = grp->name;
++
++    if (!lingsi_pctrl_is_function_valid(pctl, pin, fnum))
++        return -EINVAL;
++
++    (*map)[*num_maps].data.mux.function = lingsi_gpio_functions[fnum];
++    (*num_maps)++;
++
++    return 0;
++}
++
++static uint32_t lingsi_pctrl_dt_subnode_to_map(struct pinctrl_dev *pctldev,
++                                          struct device_node *node,
++                                          struct pinctrl_map **map,
++                                          unsigned *reserved_maps,
++                                          unsigned *num_maps)
++{
++    struct lingsi_pinctrl *pctl;
++    struct lingsi_pinctrl_group *grp;
++    struct property *pins;
++    union pin_mux pmux;
++    bool has_config = 0;
++    uint32_t num_configs;
++    uint32_t num_pins;
++    uint32_t num_funcs;
++    uint32_t maps_per_pin;
++    uint32_t i;
++    uint32_t err = 0;
++    unsigned reserve = 0;
++    unsigned long *configs;
++
++    pctl = pinctrl_dev_get_drvdata(pctldev);
++    pins = of_find_property(node, "pinmux", NULL);
++    if (!pins) {
++        dev_err(pctl->dev, "missing pins property in node %pOFn .\n", node);
++        return -EINVAL;
++    }
++
++    err = pinconf_generic_parse_dt_config(node, pctldev, &configs, &num_configs);
++    if (err)
++        return err;
++
++    if (num_configs)
++        has_config = 1;
++
++    num_pins = pins->length / sizeof(uint64_t);
++    num_funcs = num_pins;
++    maps_per_pin = 0;
++    if (num_funcs)
++        maps_per_pin++;
++    if (has_config && num_pins >= 1)
++        maps_per_pin++;
++
++    if (!num_pins || !maps_per_pin) {
++        err = -EINVAL;
++        goto exit;
++    }
++
++    reserve = num_pins * maps_per_pin;
++
++    err = pinctrl_utils_reserve_map(pctldev, map, reserved_maps, num_maps, reserve);
++    if (err)
++        goto exit;
++
++    for (i = 0; i < num_pins; i++) {
++        err = of_property_read_u64_index(node, "pinmux", i, &(pmux.data));
++        if (err)
++            goto exit;
++        pctl->pflag[pmux.mux.num] = pmux.mux.flag;
++        pctl->pmode[pmux.mux.num] = pmux.mux.mode;
++
++        if (!lingsi_pctrl_is_function_valid(pctl, pmux.mux.num, pmux.mux.func)) {
++            err = -EINVAL;
++            goto exit;
++        }
++
++        grp = lingsi_pctrl_find_group_by_pin(pctl, pmux.mux.num);
++        if (!grp) {
++            dev_err(pctl->dev, "unable to match pmux.mux.num %d to group\n", pmux.mux.num);
++            err = -EINVAL;
++            goto exit;
++        }
++
++        err = lingsi_pctrl_dt_node_to_map_func(pctl, pmux.mux.num, pmux.mux.func, grp, map, reserved_maps, num_maps);
++        if (err)
++            goto exit;
++
++        if (has_config) {
++            err = pinctrl_utils_add_map_configs(pctldev, map, reserved_maps, num_maps, grp->name, configs, num_configs, PIN_MAP_TYPE_CONFIGS_GROUP);
++            if (err)
++                goto exit;
++        }
++    }
++
++exit:
++    kfree(configs);
++    return err;
++}
++
++static int lingsi_pctrl_dt_node_to_map(struct pinctrl_dev *pctldev,
++                                       struct device_node *np_config,
++                                       struct pinctrl_map **map,
++                                       unsigned *num_maps)
++{
++    struct device_node *np;
++    unsigned reserved_maps;
++    int ret;
++    *map = NULL;
++    *num_maps = 0;
++    reserved_maps = 0;
++
++    for_each_child_of_node (np_config, np) {
++        ret = lingsi_pctrl_dt_subnode_to_map(pctldev, np, map, &reserved_maps, num_maps);
++        if (ret < 0) {
++            pinctrl_utils_free_map(pctldev, *map, *num_maps);
++            of_node_put(np);
++            return ret;
++        }
++    }
++
++    return 0;
++}
++
++static int lingsi_pctrl_get_groups_count(struct pinctrl_dev *pctldev)
++{
++    struct lingsi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++
++    return pctl->ngroups;
++}
++
++static const char *lingsi_pctrl_get_group_name(struct pinctrl_dev *pctldev,
++                                               unsigned group)
++{
++    struct lingsi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++    return pctl->groups[group].name;
++}
++
++static int lingsi_pctrl_get_group_pins(struct pinctrl_dev *pctldev,
++                                       unsigned group,
++                                       const unsigned **pins,
++                                       unsigned *num_pins)
++{
++    struct lingsi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++
++    *pins = (unsigned *)&pctl->groups[group].pin;
++    *num_pins = 1;
++
++    return 0;
++}
++
++static const struct pinctrl_ops lingsi_pctrl_ops = {
++    .dt_node_to_map = lingsi_pctrl_dt_node_to_map,
++    .dt_free_map = pinctrl_utils_free_map,
++    .get_groups_count = lingsi_pctrl_get_groups_count,
++    .get_group_name = lingsi_pctrl_get_group_name,
++    .get_group_pins = lingsi_pctrl_get_group_pins,
++};
++
++/* Pinmux functions */
++
++static int lingsi_pmx_get_funcs_cnt(struct pinctrl_dev *pctldev)
++{
++    return ARRAY_SIZE(lingsi_gpio_functions);
++}
++
++static const char *lingsi_pmx_get_func_name(struct pinctrl_dev *pctldev,
++                                            unsigned selector)
++{
++    return lingsi_gpio_functions[selector];
++}
++
++static int lingsi_pmx_get_func_groups(struct pinctrl_dev *pctldev,
++                                      unsigned function,
++                                      const char *const **groups,
++                                      unsigned *const num_groups)
++{
++    struct lingsi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++
++    *groups = pctl->grp_names;
++    *num_groups = pctl->ngroups;
++
++    return 0;
++}
++
++static uint32_t lingsi_pmx_set_mode(struct lingsi_pinctrl *pctl,
++                               uint32_t offset,
++                               uint32_t mode,
++                               uint32_t alt)
++{
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++    uint32_t alt_shift;
++    uint32_t alt_mask;
++    uint32_t alt_offset;
++    uint32_t val;
++    uint32_t err = 0;
++    unsigned long flags;
++
++    spin_lock_irqsave(&pctl->lock, flags);
++
++    if (pctl->hwlock) {
++        err = hwspin_lock_timeout_in_atomic(pctl->hwlock, HWSPNLCK_TIMEOUT);
++        if (err) {
++            dev_err(pctl->dev, "Can't get hwspinlock\n");
++            goto unlock;
++        }
++    }
++
++    switch (mode) {
++    case GPIO_LINE_DIRECTION_OUT:
++        /* disable alter func */
++        alt_offset = LINGSI_GPIO_PIN_SEL1 + (offset >> 5) * 0x4;
++        regmap_clear_bits(pctl->sysc_awo_regmap, alt_offset, BIT(offset % 32));
++        /* output */
++        val = BIT(LINGSI_GPIO_PINS_PER_BANK + pin);
++        regmap_set_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_OE_FIR, val);
++        break;
++    case GPIO_LINE_DIRECTION_IN:
++        /* disable alter func */
++        alt_offset = LINGSI_GPIO_PIN_SEL1 + (offset >> 5) * 0x4;
++        regmap_clear_bits(pctl->sysc_awo_regmap, alt_offset, BIT(offset % 32));
++        /* input */
++        val = BIT(LINGSI_GPIO_PINS_PER_BANK + pin);
++        regmap_clear_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_OE_FIR, val);
++        break;
++    default:
++        alt_offset = LINGSI_PER_FUNC_SEL + ALIGN_DOWN(offset, 4);
++        alt_shift = (offset % 4) * 8;
++        alt_mask = GENMASK(alt_shift + 7, alt_shift);
++        alt <<= alt_shift;
++        regmap_update_bits(pctl->sysc_per_regmap, alt_offset, alt_mask, alt);
++        /* enable alter func */
++        alt_offset = LINGSI_GPIO_PIN_SEL1 + (offset >> 5) * 0x4;
++        regmap_set_bits(pctl->sysc_awo_regmap, alt_offset, BIT(offset % 32));
++        if (pctl->pflag[offset].data) {
++            if (pctl->pflag[offset].mode.lock) {
++                regmap_set_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_LVS_LOCK, BIT(pin));
++            }
++            if (pctl->pflag[offset].mode.lvs) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_DOT, BIT(pin + LINGSI_GPIO_PINS_PER_BANK), pctl->pmode[offset].mode.lvs);
++            }
++            if (pctl->pflag[offset].mode.dot_clr) {
++                regmap_set_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_DOT, BIT(pin + LINGSI_GPIO_PINS_PER_BANK));
++            }
++            if (pctl->pflag[offset].mode.dot_set) {
++                regmap_set_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_DOT, BIT(pin));
++            }
++            if (pctl->pflag[offset].mode.pd) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_PD_PU, BIT(pin + LINGSI_GPIO_PINS_PER_BANK), pctl->pmode[offset].mode.pd);
++            }
++            if (pctl->pflag[offset].mode.pu) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_PD_PU, BIT(pin), pctl->pmode[offset].mode.pu);
++            }
++            if (pctl->pflag[offset].mode.ien) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_IEN_OD, BIT(pin + LINGSI_GPIO_PINS_PER_BANK), pctl->pmode[offset].mode.ien);
++            }
++            if (pctl->pflag[offset].mode.od) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_IEN_OD, BIT(pin), pctl->pmode[offset].mode.ien);
++            }
++            if (pctl->pflag[offset].mode.ds1) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_DS, BIT(pin + LINGSI_GPIO_PINS_PER_BANK), pctl->pmode[offset].mode.ds1);
++            }
++            if (pctl->pflag[offset].mode.ds2) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_DS, BIT(pin), pctl->pmode[offset].mode.ds2);
++            }
++            if (pctl->pflag[offset].mode.ae1) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_AE, BIT(pin + LINGSI_GPIO_PINS_PER_BANK), pctl->pmode[offset].mode.ae1);
++            }
++            if (pctl->pflag[offset].mode.ae2) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_AE, BIT(pin), pctl->pmode[offset].mode.ae2);
++            }
++            if (pctl->pflag[offset].mode.oe) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_OE_FIR, BIT(pin + LINGSI_GPIO_PINS_PER_BANK), pctl->pmode[offset].mode.oe);
++            }
++            if (pctl->pflag[offset].mode.oe) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_OE_FIR, BIT(pin), pctl->pmode[offset].mode.oe);
++            }
++            if (pctl->pflag[offset].mode.hss) {
++                regmap_update_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_HSS_DIN, BIT(pin + LINGSI_GPIO_PINS_PER_BANK), pctl->pmode[offset].mode.hss);
++            }
++        }
++        break;
++    };
++
++    if (pctl->hwlock)
++        hwspin_unlock_in_atomic(pctl->hwlock);
++
++unlock:
++    spin_unlock_irqrestore(&pctl->lock, flags);
++
++    return err;
++}
++
++void lingsi_pmx_get_mode(struct lingsi_pinctrl *pctl, uint32_t offset, uint32_t *mode, uint32_t *alt)
++{
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++    uint32_t alt_shift;
++    uint32_t alt_mask;
++    uint32_t alt_offset;
++    uint32_t val;
++    unsigned long flags;
++
++    spin_lock_irqsave(&pctl->lock, flags);
++
++    alt_offset = LINGSI_GPIO_PIN_SEL1 + (offset >> 5) * 0x4;
++    val = !!(regmap_test_bits(pctl->sysc_awo_regmap, alt_offset, BIT(offset % 32)));
++    if (val) {
++        /* alter func is on: AF mode */
++        alt_offset = LINGSI_PER_FUNC_SEL + ALIGN_DOWN(offset, 4);
++        regmap_read(pctl->sysc_per_regmap, alt_offset, &val);
++        alt_shift = (offset % 4) * 8;
++        alt_mask = GENMASK(alt_shift + 7, alt_shift);
++        *alt = (val & alt_mask) >> alt_shift;
++        *mode = MODE_ALTER_FUNC;
++    } else {
++        *alt = 0;
++        val = !!(regmap_test_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_OE_FIR, BIT(LINGSI_GPIO_PINS_PER_BANK + pin)));
++        if (val) {
++            *mode = GPIO_LINE_DIRECTION_OUT;
++        } else {
++            *mode = GPIO_LINE_DIRECTION_IN;
++        }
++    }
++    spin_unlock_irqrestore(&pctl->lock, flags);
++}
++
++static int lingsi_pmx_set_mux(struct pinctrl_dev *pctldev,
++                              unsigned function,
++                              unsigned group)
++{
++    struct lingsi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++    struct lingsi_pinctrl_group *g = pctl->groups + group;
++    uint32_t mode, alt;
++    bool ret;
++
++    ret = lingsi_pctrl_is_function_valid(pctl, g->pin, function);
++    if (!ret)
++        return -EINVAL;
++
++    mode = lingsi_gpio_get_mode(function);
++    alt = lingsi_gpio_get_alt(function);
++
++    return lingsi_pmx_set_mode(pctl, g->pin, mode, alt);
++}
++
++static uint32_t lingsi_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
++                                         unsigned gpio,
++                                         bool input)
++{
++    struct lingsi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++
++    return lingsi_pmx_set_mode(pctl, gpio, input, 0);
++}
++
++static const struct pinmux_ops lingsi_pmx_ops = {
++    .get_functions_count = lingsi_pmx_get_funcs_cnt,
++    .get_function_name = lingsi_pmx_get_func_name,
++    .get_function_groups = lingsi_pmx_get_func_groups,
++    .set_mux = lingsi_pmx_set_mux,
++    .strict = true,
++};
++
++/* Pinconf functions */
++
++static uint32_t lingsi_pconf_set_driving(struct lingsi_pinctrl *pctl,
++                                    unsigned offset,
++                                    uint32_t drive)
++{
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++    unsigned long flags;
++    uint32_t err = 0;
++
++    spin_lock_irqsave(&pctl->lock, flags);
++
++    if (pctl->hwlock) {
++        err = hwspin_lock_timeout_in_atomic(pctl->hwlock, HWSPNLCK_TIMEOUT);
++        if (err) {
++            dev_err(pctl->dev, "Can't get hwspinlock\n");
++            goto unlock;
++        }
++    }
++
++    if (drive) {
++        regmap_set_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_IEN_OD, BIT(pin));
++    } else {
++        regmap_clear_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_IEN_OD, BIT(pin));
++    }
++
++    if (pctl->hwlock)
++        hwspin_unlock_in_atomic(pctl->hwlock);
++
++unlock:
++    spin_unlock_irqrestore(&pctl->lock, flags);
++
++    return err;
++}
++
++static uint32_t lingsi_pconf_get_driving(struct lingsi_pinctrl *pctl,
++                                         uint32_t offset)
++{
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++    uint32_t val;
++    unsigned long flags;
++
++    spin_lock_irqsave(&pctl->lock, flags);
++
++    val = !!(regmap_test_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_IEN_OD, BIT(pin)));
++
++    spin_unlock_irqrestore(&pctl->lock, flags);
++
++    return val;
++}
++
++static uint32_t lingsi_pconf_set_bias(struct lingsi_pinctrl *pctl,
++                                 unsigned offset,
++                                 uint32_t bias)
++{
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++    uint32_t val;
++    uint32_t err = 0;
++    unsigned long flags;
++
++    spin_lock_irqsave(&pctl->lock, flags);
++
++    if (pctl->hwlock) {
++        err = hwspin_lock_timeout_in_atomic(pctl->hwlock, HWSPNLCK_TIMEOUT);
++        if (err) {
++            dev_err(pctl->dev, "Can't get hwspinlock\n");
++            goto unlock;
++        }
++    }
++
++    if (bias == LINGSI_GPIO_PULL_UP) {
++        val = BIT(pin);
++    } else if (bias == LINGSI_GPIO_PULL_DOWN) {
++        val = BIT(pin + LINGSI_GPIO_PINS_PER_BANK);
++    }
++
++    regmap_set_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_PD_PU, val);
++
++    if (pctl->hwlock)
++        hwspin_unlock_in_atomic(pctl->hwlock);
++
++unlock:
++    spin_unlock_irqrestore(&pctl->lock, flags);
++
++    return err;
++}
++
++static uint32_t lingsi_pconf_get_bias(struct lingsi_pinctrl *pctl, uint32_t offset)
++{
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++    uint32_t val;
++    uint32_t ret;
++    unsigned long flags;
++
++    ret = LINGSI_GPIO_DISABLE_PULL_UP_DOWN;
++
++    spin_lock_irqsave(&pctl->lock, flags);
++
++    regmap_read(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_PD_PU, &val);
++    if (val & (BIT(pin))) {
++        ret = LINGSI_GPIO_PULL_UP;
++    } else if (val & (BIT(pin + LINGSI_GPIO_PINS_PER_BANK))) {
++        ret = LINGSI_GPIO_PULL_DOWN;
++    }
++    //TBG
++    //both LINGSI_GPIO_PULL_UP & LINGSI_GPIO_PULL_DOWN
++
++    spin_unlock_irqrestore(&pctl->lock, flags);
++
++    return ret;
++}
++
++static bool lingsi_pconf_get(struct lingsi_pinctrl *pctl,
++                             uint32_t offset,
++                             bool dir)
++{
++    uint16_t bank = lingsi_gpio_bank(offset);
++    uint16_t pin = lingsi_gpio_pin(offset);
++    uint32_t reg_offt = lingsi_gpio_bank_base(bank);
++    uint32_t val;
++    unsigned long flags;
++
++    spin_lock_irqsave(&pctl->lock, flags);
++
++    if (dir) {
++        val = !!(regmap_test_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_HSS_DIN, BIT(pin)));
++    } else {
++        val = !!(regmap_test_bits(pctl->gpio_regmap, reg_offt + LINGSI_GPIO_DOT, BIT(pin)));
++    }
++
++    spin_unlock_irqrestore(&pctl->lock, flags);
++
++    return val;
++}
++
++static uint32_t lingsi_pconf_parse_conf(struct pinctrl_dev *pctldev,
++                                   uint32_t pin,
++                                   enum pin_config_param param,
++                                   enum pin_config_param arg)
++{
++    struct lingsi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++    uint32_t ret = 0;
++
++    switch (param) {
++    case PIN_CONFIG_DRIVE_PUSH_PULL:
++        ret = lingsi_pconf_set_driving(pctl, pin, 0);
++        break;
++    case PIN_CONFIG_DRIVE_OPEN_DRAIN:
++        ret = lingsi_pconf_set_driving(pctl, pin, 1);
++        break;
++    case PIN_CONFIG_BIAS_DISABLE:
++        ret = lingsi_pconf_set_bias(pctl, pin, 0);
++        break;
++    case PIN_CONFIG_BIAS_PULL_UP:
++        ret = lingsi_pconf_set_bias(pctl, pin, 1);
++        break;
++    case PIN_CONFIG_BIAS_PULL_DOWN:
++        ret = lingsi_pconf_set_bias(pctl, pin, 2);
++        break;
++    case PIN_CONFIG_OUTPUT:
++        __lingsi_gpio_set(pctl, pin, arg);
++        ret = lingsi_pmx_gpio_set_direction(pctldev, pin, GPIO_LINE_DIRECTION_OUT);
++        break;
++    default:
++        ret = -ENOTSUPP;
++    }
++
++    return ret;
++}
++
++static int lingsi_pconf_group_get(struct pinctrl_dev *pctldev,
++                                  unsigned group,
++                                  unsigned long *config)
++{
++    struct lingsi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++
++    *config = pctl->groups[group].config;
++
++    return 0;
++}
++
++static int lingsi_pconf_group_set(struct pinctrl_dev *pctldev, unsigned group, unsigned long *configs, unsigned num_configs)
++{
++    struct lingsi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++    struct lingsi_pinctrl_group *g = &pctl->groups[group];
++    uint32_t i;
++    int ret;
++
++    for (i = 0; i < num_configs; i++) {
++        mutex_lock(&pctldev->mutex);
++        ret = lingsi_pconf_parse_conf(pctldev, g->pin, pinconf_to_config_param(configs[i]), pinconf_to_config_argument(configs[i]));
++        mutex_unlock(&pctldev->mutex);
++        if (ret < 0) {
++            return ret;
++        }
++
++        g->config = configs[i];
++    }
++
++    return 0;
++}
++
++static int lingsi_pconf_set(struct pinctrl_dev *pctldev, uint32_t pin, unsigned long *configs, uint32_t num_configs)
++{
++    uint32_t i;
++    int ret;
++
++    for (i = 0; i < num_configs; i++) {
++        ret = lingsi_pconf_parse_conf(pctldev, pin, pinconf_to_config_param(configs[i]), pinconf_to_config_argument(configs[i]));
++        if (ret < 0)
++            return ret;
++    }
++
++    return 0;
++}
++
++static struct lingsi_desc_pin *
++lingsi_pconf_get_pin_desc_by_pin_number(struct lingsi_pinctrl *pctl,
++                                        uint32_t pin_number)
++{
++    struct lingsi_desc_pin *pins = pctl->pins;
++    uint32_t i;
++
++    for (i = 0; i < pctl->npins; i++) {
++        if (pins->pin.number == pin_number)
++            return pins;
++        pins++;
++    }
++    return NULL;
++}
++
++static void lingsi_pconf_dbg_show(struct pinctrl_dev *pctldev,
++                                  struct seq_file *s,
++                                  uint32_t offset)
++{
++    struct lingsi_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
++    const struct lingsi_desc_pin *pin_desc;
++    uint32_t mode;
++    uint32_t alt;
++    uint32_t drive;
++    uint32_t bias;
++    bool val;
++    static const char *const modes[] = {
++        "output", "input", "alternate", "analog"
++    };
++    static const char *const biasing[] = {
++        "disabled", "pull up", "pull down", ""
++    };
++
++    lingsi_pmx_get_mode(pctl, offset, &mode, &alt);
++    bias = lingsi_pconf_get_bias(pctl, offset);
++    switch (mode) {
++    /* output */
++    case GPIO_LINE_DIRECTION_OUT:
++        drive = lingsi_pconf_get_driving(pctl, offset);
++        val = lingsi_pconf_get(pctl, offset, false);
++        seq_printf(s, "mode [%s] - value [%s] - drive [%s]", modes[mode], val ? "high" : "low", drive ? "open drain" : "push pull");
++        break;
++
++    /* input */
++    case GPIO_LINE_DIRECTION_IN:
++        val = lingsi_pconf_get(pctl, offset, true);
++        seq_printf(s, "mode [%s] - value [%s] - bias [%s]", modes[mode], val ? "high" : "low", biasing[bias]);
++        break;
++
++    /* alternate */
++    case MODE_ALTER_FUNC:
++        drive = lingsi_pconf_get_driving(pctl, offset);
++        pin_desc = lingsi_pconf_get_pin_desc_by_pin_number(pctl, offset);
++        if (!pin_desc)
++            return;
++
++        seq_printf(s, "mode [%s] - alter_func [%d] - alter_name [%s] - drive [%s] - bias [%s]", modes[mode], alt, pin_desc->functions[alt].name, drive ? "open drain" : "push pull", biasing[bias]);
++        break;
++
++    default:
++        break;
++    }
++}
++
++static const struct pinconf_ops lingsi_pconf_ops = {
++    .pin_config_group_get = lingsi_pconf_group_get,
++    .pin_config_group_set = lingsi_pconf_group_set,
++    .pin_config_set = lingsi_pconf_set,
++    .pin_config_dbg_show = lingsi_pconf_dbg_show,
++};
++
++static uint32_t lingsi_pctrl_build_state(struct platform_device *pdev)
++{
++    struct lingsi_pinctrl *pctl = platform_get_drvdata(pdev);
++    uint32_t i;
++
++    pctl->ngroups = pctl->npins;
++
++    /* Allocate groups */
++    pctl->groups = devm_kcalloc(&pdev->dev, pctl->ngroups, sizeof(*pctl->groups), GFP_KERNEL);
++    if (!pctl->groups)
++        return -ENOMEM;
++    /* We assume that one pin is one group, use pin name as group name. */
++    pctl->grp_names = devm_kcalloc(&pdev->dev, pctl->ngroups, sizeof(*pctl->grp_names), GFP_KERNEL);
++    if (!pctl->grp_names)
++        return -ENOMEM;
++    for (i = 0; i < pctl->npins; i++) {
++        const struct lingsi_desc_pin *pin = pctl->pins + i;
++        struct lingsi_pinctrl_group *group = pctl->groups + i;
++
++        group->name = pin->pin.name;
++
++        group->pin = pin->pin.number;
++        pctl->grp_names[i] = pin->pin.name;
++    }
++    return 0;
++}
++
++static uint32_t lingsi_pctrl_create_pins_tab(struct lingsi_pinctrl *pctl,
++                                        struct lingsi_desc_pin *pins)
++{
++    const struct lingsi_desc_pin *p;
++    uint32_t i;
++    uint32_t nb_pins_available = 0;
++
++    for (i = 0; i < pctl->match_data->npins; i++) {
++        p = pctl->match_data->pins + i;
++        if (pctl->pkg && !(pctl->pkg & p->pkg))
++            continue;
++        pins->pin = p->pin;
++        memcpy((struct lingsi_desc_pin *)pins->functions, p->functions, LINGSI_CONFIG_NUM * sizeof(struct lingsi_desc_function));
++        pins++;
++        nb_pins_available++;
++    }
++
++    pctl->npins = nb_pins_available;
++
++    return 0;
++}
++
++int lingsi_pctl_probe(struct platform_device *pdev)
++{
++    const struct lingsi_pinctrl_match_data *match_data;
++    struct device *dev = &pdev->dev;
++    struct lingsi_pinctrl *pctl;
++    struct pinctrl_pin_desc *pins;
++    uint32_t i;
++    uint32_t hwlock_id;
++    int ret;
++
++    match_data = device_get_match_data(dev);
++    if (!match_data)
++        return -EINVAL;
++
++    pctl = devm_kzalloc(dev, sizeof(*pctl), GFP_KERNEL);
++    if (!pctl)
++        return -ENOMEM;
++
++    platform_set_drvdata(pdev, pctl);
++
++    pctl->sysc_awo_regmap =
++        syscon_regmap_lookup_by_compatible("lingsi,sysc_awo");
++    if (IS_ERR(pctl->sysc_awo_regmap)) {
++        dev_err(pctl->dev, "didn't find lingsi,sysc_awo\n");
++        return PTR_ERR(pctl->sysc_awo_regmap);
++    }
++
++    pctl->sysc_per_regmap =
++        syscon_regmap_lookup_by_compatible("lingsi,sysc_per");
++    if (IS_ERR(pctl->sysc_per_regmap)) {
++        dev_err(pctl->dev, "didn't find lingsi,sysc_per\n");
++        return PTR_ERR(pctl->sysc_per_regmap);
++    }
++
++    pctl->gpio_regmap =
++        syscon_regmap_lookup_by_compatible("lingsi,gpio");
++    if (IS_ERR(pctl->gpio_regmap)) {
++        dev_err(pctl->dev, "didn't find lingsi,gpio\n");
++        return PTR_ERR(pctl->gpio_regmap);
++    }
++
++    spin_lock_init(&pctl->lock);
++
++    /* hwspinlock is optional */
++    hwlock_id = of_hwspin_lock_get_id(pdev->dev.of_node, 0);
++    if (hwlock_id < 0) {
++        if (hwlock_id == -EPROBE_DEFER)
++            return hwlock_id;
++    } else {
++        pctl->hwlock = hwspin_lock_request_specific(hwlock_id);
++    }
++
++    pctl->dev = dev;
++    pctl->match_data = match_data;
++    /*  get optional package information */
++    if (!device_property_read_u32(dev, "lingsi,package", &pctl->pkg))
++        dev_dbg(pctl->dev, "package detected: %x\n", pctl->pkg);
++
++    pctl->pins = devm_kcalloc(pctl->dev, pctl->match_data->npins, sizeof(*pctl->pins), GFP_KERNEL);
++    if (!pctl->pins)
++        return -ENOMEM;
++    pctl->pflag = devm_kcalloc(pctl->dev, pctl->match_data->npins, sizeof(union pin_mode), GFP_KERNEL);
++    if (!pctl->pflag)
++        return -ENOMEM;
++    pctl->pmode = devm_kcalloc(pctl->dev, pctl->match_data->npins, sizeof(union pin_mode), GFP_KERNEL);
++    if (!pctl->pmode)
++        return -ENOMEM;
++    ret = lingsi_pctrl_create_pins_tab(pctl, pctl->pins);
++    if (ret)
++        return ret;
++    ret = lingsi_pctrl_build_state(pdev);
++    if (ret) {
++        dev_err(dev, "build state failed: %d\n", ret);
++        return -EINVAL;
++    }
++
++    pins = devm_kcalloc(&pdev->dev, pctl->npins, sizeof(*pins), GFP_KERNEL);
++    if (!pins)
++        return -ENOMEM;
++    for (i = 0; i < pctl->npins; i++)
++        pins[i] = pctl->pins[i].pin;
++
++    pctl->pctl_desc.name = dev_name(&pdev->dev);
++    pctl->pctl_desc.owner = THIS_MODULE;
++    pctl->pctl_desc.pins = pins;
++    pctl->pctl_desc.npins = pctl->npins;
++    pctl->pctl_desc.link_consumers = true;
++    pctl->pctl_desc.confops = &lingsi_pconf_ops;
++    pctl->pctl_desc.pctlops = &lingsi_pctrl_ops;
++    pctl->pctl_desc.pmxops = &lingsi_pmx_ops;
++    pctl->dev = &pdev->dev;
++    pctl->pctl_dev = devm_pinctrl_register(&pdev->dev, &pctl->pctl_desc, pctl);
++    if (IS_ERR(pctl->pctl_dev)) {
++        dev_err(&pdev->dev, "Failed pinctrl registration\n");
++        return PTR_ERR(pctl->pctl_dev);
++    }
++
++    dev_info(dev, "initialized\n");
++    return 0;
++}
++
++MODULE_AUTHOR("Hunter Liu <htliu@linkedsemi.com>");
++MODULE_DESCRIPTION("linkedsemi GPIO driver");
++MODULE_LICENSE("GPL v2");
+diff --git a/drivers/pinctrl/lingsi/pinctrl-lingsi.h b/drivers/pinctrl/lingsi/pinctrl-lingsi.h
+new file mode 100644
+index 000000000000..7af4ce75d7b8
+--- /dev/null
++++ b/drivers/pinctrl/lingsi/pinctrl-lingsi.h
+@@ -0,0 +1,69 @@
++#ifndef __PINCTRL_LINGSI_H
++#define __PINCTRL_LINGSI_H
++
++#include <linux/pinctrl/pinctrl.h>
++#include <linux/pinctrl/pinconf-generic.h>
++#include <dt-bindings/pinctrl/lingsi-pinfunc.h>
++
++#define LINGSI_GET_PIN_NO(x) ((x) >> 8)
++#define LINGSI_GET_PIN_FUNC(x) ((x) & 0xff)
++
++#define LINGSI_PIN_GPIO        0
++#define LINGSI_PIN_AF(x)        ((x))
++//when LINGSI_PIN_ANALOG exist, LINGSI_CONFIG_NUM is LINGSI_PIN_ANALOG
++#define LINGSI_CONFIG_NUM    (LINGSI_PIN_AF(AF_END + 1))
++#if 0
++#define LINGSI_PIN_ANALOG    (LINGSI_PIN_AF(AF_END))
++#define LINGSI_CONFIG_NUM    (LINGSI_PIN_ANALOG)
++#endif
++
++/*  package information */
++#define LINGSIMP_PKG_AA        BIT(0)
++#define LINGSIMP_PKG_AB        BIT(1)
++#define LINGSIMP_PKG_AC        BIT(2)
++#define LINGSIMP_PKG_AD        BIT(3)
++
++struct lingsi_desc_function {
++    const char *name;
++    const unsigned char num;
++};
++
++struct lingsi_desc_pin {
++    struct pinctrl_pin_desc pin;
++    const struct lingsi_desc_function functions[LINGSI_CONFIG_NUM];
++    const unsigned int pkg;
++};
++
++#define LINGSI_PIN(_pin, ...)                    \
++    {                            \
++        .pin = _pin,                    \
++        .functions = {    \
++            __VA_ARGS__},            \
++    }
++
++#define LINGSI_PIN_PKG(_pin, _pkg, ...)                    \
++    {                            \
++        .pin = _pin,                    \
++        .pkg  = _pkg,                \
++        .functions = {    \
++            __VA_ARGS__},            \
++    }
++#define LINGSI_FUNCTION(_num, _name)        \
++    [_num] = {                        \
++        .num = _num,                    \
++        .name = _name,                    \
++    }
++
++struct lingsi_pinctrl_match_data {
++    const struct lingsi_desc_pin *pins;
++    const unsigned int npins;
++    bool secure_control;
++};
++
++struct lingsi_gpio_bank;
++
++int lingsi_pctl_probe(struct platform_device *pdev);
++// int lingsi_pinctrl_suspend(struct device *dev);
++// int lingsi_pinctrl_resume(struct device *dev);
++
++#endif /* __PINCTRL_LINGSI_H */
+diff --git a/include/dt-bindings/pinctrl/lingsi-pinfunc.h b/include/dt-bindings/pinctrl/lingsi-pinfunc.h
+new file mode 100644
+index 000000000000..8db18fc85879
+--- /dev/null
++++ b/include/dt-bindings/pinctrl/lingsi-pinfunc.h
+@@ -0,0 +1,185 @@
++#ifndef PER_FUNC_MUX_H_
++#define PER_FUNC_MUX_H_
++
++#define MODE_GPIO   0
++/* set to 2 to compatible func lingsi_pmx_set_mode() */
++#define MODE_ALTER_FUNC     2
++// #define ANALOG
++
++/* define Pins number*/
++#define LINGSI_GPIO_PINS_PER_BANK        16
++#define PIN_NO(port, line)               (((port) - 'A') * LINGSI_GPIO_PINS_PER_BANK + (line))
++#define LINGSI_PINMUX(port, line, mode)  (((PIN_NO(port, line)) | ((mode) << 16)))
++
++#define LINGSI_GPIO            0
++#define LINGSI_GPTIMA1_CH1     1
++#define LINGSI_GPTIMA1_CH2     2
++#define LINGSI_GPTIMA1_CH3     3
++#define LINGSI_GPTIMA1_CH4     4
++#define LINGSI_GPTIMA1_ETR     5
++#define LINGSI_GPTIMA2_CH1     6
++#define LINGSI_GPTIMA2_CH2     7
++#define LINGSI_GPTIMA2_CH3     8
++#define LINGSI_GPTIMA2_CH4     9
++#define LINGSI_GPTIMA2_ETR     10
++#define LINGSI_GPTIMB1_CH1     11
++#define LINGSI_GPTIMB1_CH2     12
++#define LINGSI_GPTIMB1_CH3     13
++#define LINGSI_GPTIMB1_CH4     14
++#define LINGSI_GPTIMB1_ETR     15
++#define LINGSI_GPTIMC1_CH1     16
++#define LINGSI_GPTIMC1_CH1N    17
++#define LINGSI_GPTIMC1_CH2     18
++#define LINGSI_GPTIMC1_BK      19
++#define LINGSI_ADTIM1_CH1      20
++#define LINGSI_ADTIM1_CH1N     21
++#define LINGSI_ADTIM1_CH2      22
++#define LINGSI_ADTIM1_CH2N     23
++#define LINGSI_ADTIM1_CH3      24
++#define LINGSI_ADTIM1_CH3N     25
++#define LINGSI_ADTIM1_CH4      26
++#define LINGSI_ADTIM1_ETR      27
++#define LINGSI_ADTIM1_BK       28
++#define LINGSI_ADTIM2_CH1      29
++#define LINGSI_ADTIM2_CH1N     30
++#define LINGSI_ADTIM2_CH2      31
++#define LINGSI_ADTIM2_CH2N     32
++#define LINGSI_ADTIM2_CH3      33
++#define LINGSI_ADTIM2_CH3N     34
++#define LINGSI_ADTIM2_CH4      35
++#define LINGSI_ADTIM2_ETR      36
++#define LINGSI_ADTIM2_BK       37
++#define LINGSI_ADTIM3_CH1      38
++#define LINGSI_ADTIM3_CH1N     39
++#define LINGSI_ADTIM3_CH2      40
++#define LINGSI_ADTIM3_CH2N     41
++#define LINGSI_ADTIM3_CH3      42
++#define LINGSI_ADTIM3_CH3N     43
++#define LINGSI_ADTIM3_CH4      44
++#define LINGSI_ADTIM3_ETR      45
++#define LINGSI_ADTIM3_BK       46
++#define LINGSI_ADTIM4_CH1      47
++#define LINGSI_ADTIM4_CH1N     48
++#define LINGSI_ADTIM4_CH2      49
++#define LINGSI_ADTIM4_CH2N     50
++#define LINGSI_ADTIM4_CH3      51
++#define LINGSI_ADTIM4_CH3N     52
++#define LINGSI_ADTIM4_CH4      53
++#define LINGSI_ADTIM4_ETR      54
++#define LINGSI_ADTIM4_BK       55
++#define LINGSI_I2C1_SCL        56
++#define LINGSI_I2C1_SDA        57
++#define LINGSI_I2C1_SMBA       58
++#define LINGSI_I2C2_SCL        59
++#define LINGSI_I2C2_SDA        60
++#define LINGSI_I2C2_SMBA       61
++#define LINGSI_I2C3_SDA        62
++#define LINGSI_I2C3_SCL        63
++#define LINGSI_I2C3_SMBA       64
++#define LINGSI_I2C4_SCL        65
++#define LINGSI_I2C4_SDA        66
++#define LINGSI_I2C4_SMBA       67
++#define LINGSI_I2C5_SCL        68
++#define LINGSI_I2C5_SDA        69
++#define LINGSI_I2C5_SMBA       70
++#define LINGSI_I2C6_SDA        71
++#define LINGSI_I2C6_SCL        72
++#define LINGSI_I2C6_SMBA       73
++#define LINGSI_UART1_TXD       74
++#define LINGSI_UART1_RXD       75
++#define LINGSI_UART1_CTSN      76
++#define LINGSI_UART1_RTSN      77
++#define LINGSI_UART1_CK        78
++#define LINGSI_UART2_TXD       79
++#define LINGSI_UART2_RXD       80
++#define LINGSI_UART2_CTSN      81
++#define LINGSI_UART2_RTSN      82
++#define LINGSI_UART3_TXD       83
++#define LINGSI_UART3_RXD       84
++#define LINGSI_UART3_CTSN      85
++#define LINGSI_UART3_RTSN      86
++#define LINGSI_DWUART1_TXD       87
++#define LINGSI_DWUART1_RXD       88
++#define LINGSI_DWUART1_CTSN      89
++#define LINGSI_DWUART1_RTSN      90
++#define LINGSI_DWUART1_DE        91
++#define LINGSI_DWUART1_RE        92
++#define LINGSI_DWUART2_TXD       93
++#define LINGSI_DWUART2_RXD       94
++#define LINGSI_DWUART2_CTSN      95
++#define LINGSI_DWUART2_RTSN      96
++#define LINGSI_DWUART2_DE        97
++#define LINGSI_DWUART2_RE        98
++#define LINGSI_SPI1_NSS0       99
++#define LINGSI_SPI1_NSS1       100
++#define LINGSI_SPI1_SCK        101
++#define LINGSI_SPI1_DQ0        102
++#define LINGSI_SPI1_DQ1        103
++#define LINGSI_SPI1_DQ2        104
++#define LINGSI_SPI1_DQ3        105
++#define LINGSI_SPI2_SCK        106
++#define LINGSI_SPI2_NSS        107
++#define LINGSI_SPI2_MOSI       108
++#define LINGSI_SPI2_MISO       109
++#define LINGSI_SPI2_I2S        110
++#define LINGSI_SPI3_SCK        111
++#define LINGSI_SPI3_NSS        112
++#define LINGSI_SPI3_MOSI       113
++#define LINGSI_SPI3_MISO       114
++#define LINGSI_SPI3_I2S        115
++#define LINGSI_PDM_CLK         116
++#define LINGSI_PDM_DATA0       117
++#define LINGSI_PDM_DATA1       118
++#define LINGSI_PIS_CH0         119
++#define LINGSI_PIS_CH1         120
++#define LINGSI_FDCAN_TXD       121
++#define LINGSI_FDCAN_RXD       122
++#define LINGSI_USB_DP          123
++#define LINGSI_USB_DM          124
++#define LINGSI_COMP1           125
++#define LINGSI_COMP2           126
++#define LINGSI_COMP3           127
++#define LINGSI_PWM1            128
++#define LINGSI_PWM2            129
++#define LINGSI_PWM3            130
++#define LINGSI_PWM4            131
++#define LINGSI_PWM5            132
++#define LINGSI_PWM6            133
++#define LINGSI_PWM7            134
++#define LINGSI_PWM8            135
++#define LINGSI_CAP1            136
++#define LINGSI_CAP2            137
++#define LINGSI_CAP3            138
++#define LINGSI_CAP4            139
++#define LINGSI_CAP5            140
++#define LINGSI_CAP6            141
++#define LINGSI_CAP7            142
++#define LINGSI_CAP8            143
++#define LINGSI_OWM             144
++#define LINGSI_PS2H1_CLK      145
++#define LINGSI_PS2H1_DAT      146
++#define LINGSI_PS2H2_CLK      147
++#define LINGSI_PS2H2_DAT      148
++#define LINGSI_PS2H3_CLK      149
++#define LINGSI_PS2H3_DAT      150
++#define LINGSI_PS2H4_CLK      151
++#define LINGSI_PS2H4_DAT      152
++#define LINGSI_CEC             153
++#define LINGSI_PECI            154
++#define LINGSI_I2C_DBG_SCL     155
++#define LINGSI_I2C_DBG_SDA     156
++#define LINGSI_USB_CID         163
++
++#define AF_START            LINGSI_GPTIMA1_CH1
++#define AF_END              LINGSI_USB_CID
++
++// #define SGPMLD IIC5_SDA
++// #define SGPMO  IIC6_SCL
++// #define SGPMCK IIC5_SCL
++// #define SGPMI  IIC6_SDA
++#define LINGSI_SGPMLD LINGSI_PS2H3_DAT
++#define LINGSI_SGPMO  LINGSI_PS2H4_CLK
++#define LINGSI_SGPMCK LINGSI_PS2H3_CLK
++#define LINGSI_SGPMI  LINGSI_PS2H4_DAT
++
++#endif
+-- 
+2.39.2
+

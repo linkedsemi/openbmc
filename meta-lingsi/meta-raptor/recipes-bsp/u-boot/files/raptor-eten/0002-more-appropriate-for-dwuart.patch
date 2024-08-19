@@ -1,0 +1,134 @@
+From 27a414b41bbfbd738402d8e9c84b2cbc65f6108d Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Sat, 20 Jul 2024 14:27:11 +0800
+Subject: [PATCH 2/2] more appropriate for dwuart
+
+---
+Upstream-Status: Pending
+
+ drivers/serial/ns16550.c | 19 +++++++++++++--
+ include/ns16550.h        | 50 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 67 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/serial/ns16550.c b/drivers/serial/ns16550.c
+index 7592979cab..f032ee5bbe 100644
+--- a/drivers/serial/ns16550.c
++++ b/drivers/serial/ns16550.c
+@@ -18,6 +18,7 @@
+ #include <linux/err.h>
+ #include <linux/types.h>
+ #include <asm/io.h>
++#include <div64.h>
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+@@ -210,7 +211,8 @@ int ns16550_calc_divisor(struct ns16550 *port, int clock, int baudrate)
+ {
+ 	const unsigned int mode_x_div = 16;
+ 
+-	return DIV_ROUND_CLOSEST(clock, mode_x_div * baudrate);
++	// return DIV_ROUND_CLOSEST(clock, mode_x_div * baudrate);
++	return DIV_ROUND_DOWN_ULL(clock, (mode_x_div * baudrate));
+ }
+ 
+ static void ns16550_setbrg(struct ns16550 *com_port, int baud_divisor)
+@@ -224,6 +226,18 @@ static void ns16550_setbrg(struct ns16550 *com_port, int baud_divisor)
+ 	serial_out(lcr_val, &com_port->lcr);
+ }
+ 
++static void snps_ns16550_setbrg(struct ns16550 *com_port, int clock, int baudrate, int baud_divisor)
++{
++	/* to keep serial format, read lcr before writing BKSE */
++	int lcr_val = serial_in(&com_port->lcr) & ~UART_LCR_BKSE;
++
++	serial_out(UART_LCR_BKSE | lcr_val, &com_port->lcr);
++	serial_out(((clock / baudrate) % 16) & 0xf, &com_port->reg30);
++	serial_out(baud_divisor & 0xff, &com_port->dll);
++	serial_out((baud_divisor >> 8) & 0xff, &com_port->dlm);
++	serial_out(lcr_val, &com_port->lcr);
++}
++
+ void ns16550_init(struct ns16550 *com_port, int baud_divisor)
+ {
+ #if (defined(CONFIG_SPL_BUILD) && \
+@@ -428,7 +442,8 @@ static int ns16550_serial_setbrg(struct udevice *dev, int baudrate)
+ 
+ 	clock_divisor = ns16550_calc_divisor(com_port, plat->clock, baudrate);
+ 
+-	ns16550_setbrg(com_port, clock_divisor);
++	// ns16550_setbrg(com_port, clock_divisor);
++	snps_ns16550_setbrg(com_port, plat->clock, baudrate, clock_divisor);
+ 
+ 	return 0;
+ }
+diff --git a/include/ns16550.h b/include/ns16550.h
+index 3d9002d9f1..e5fbd3e20f 100644
+--- a/include/ns16550.h
++++ b/include/ns16550.h
+@@ -93,6 +93,7 @@ struct ns16550 {
+ 	UART_REG(mcr);		/* 4 */
+ 	UART_REG(lsr);		/* 5 */
+ 	UART_REG(msr);		/* 6 */
++
+ 	UART_REG(spr);		/* 7 */
+ #ifdef CONFIG_SOC_DA8XX
+ 	UART_REG(reg8);		/* 8 */
+@@ -112,6 +113,55 @@ struct ns16550 {
+ 	UART_REG(uasr);		/* F */
+ 	UART_REG(scr);		/* 10*/
+ 	UART_REG(ssr);		/* 11*/
++
++	UART_REG(reg12);	/* 12 */
++	UART_REG(reg13);	/* 13 */
++	UART_REG(reg14);	/* 14 */
++	UART_REG(reg15);	/* 15 */
++	UART_REG(reg16);	/* 16 */
++	UART_REG(reg17);	/* 17 */
++	UART_REG(reg18);	/* 18 */
++	UART_REG(reg19);	/* 19 */
++	UART_REG(reg1A);	/* 1A */
++	UART_REG(reg1B);	/* 1B */
++	UART_REG(reg1C);	/* 1C */
++	UART_REG(reg1D);	/* 1D */
++	UART_REG(reg1E);	/* 1E */
++	UART_REG(reg1F);	/* 1F */
++
++	UART_REG(reg20);	/* 20 */
++	UART_REG(reg21);	/* 21 */
++	UART_REG(reg22);	/* 22 */
++	UART_REG(reg23);	/* 23 */
++	UART_REG(reg24);	/* 24 */
++	UART_REG(reg25);	/* 25 */
++	UART_REG(reg26);	/* 26 */
++	UART_REG(reg27);	/* 27 */
++	UART_REG(reg28);	/* 28 */
++	UART_REG(reg29);	/* 29 */
++	UART_REG(reg2A);	/* 2A */
++	UART_REG(reg2B);	/* 2B */
++	UART_REG(reg2C);	/* 2C */
++	UART_REG(reg2D);	/* 2D */
++	UART_REG(reg2E);	/* 2E */
++	UART_REG(reg2F);	/* 2F */
++
++	UART_REG(reg30);	/* 30 */
++	UART_REG(reg31);	/* 31 */
++	UART_REG(reg32);	/* 32 */
++	UART_REG(reg33);	/* 33 */
++	UART_REG(reg34);	/* 34 */
++	UART_REG(reg35);	/* 35 */
++	UART_REG(reg36);	/* 36 */
++	UART_REG(reg37);	/* 37 */
++	UART_REG(reg38);	/* 38 */
++	UART_REG(reg39);	/* 39 */
++	UART_REG(reg3A);	/* 3A */
++	UART_REG(reg3B);	/* 3B */
++	UART_REG(reg3C);	/* 3C */
++	UART_REG(reg3D);	/* 3D */
++	UART_REG(reg3E);	/* 3E */
++	UART_REG(reg3F);	/* 3F */
+ #endif
+ #ifdef CONFIG_DM_SERIAL
+ 	struct ns16550_plat *plat;
+-- 
+2.39.2
+

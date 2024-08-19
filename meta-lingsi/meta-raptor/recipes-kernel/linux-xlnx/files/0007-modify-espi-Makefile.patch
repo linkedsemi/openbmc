@@ -1,0 +1,29 @@
+From 7f6a7e3907fdcc5eb7117e48b115e8f96298b88f Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Thu, 25 Jul 2024 18:28:35 +0800
+Subject: [PATCH 7/7] modify espi Makefile
+
+---
+Upstream-Status: Pending
+
+ drivers/char/ipmi/lingsi/Makefile | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/char/ipmi/lingsi/Makefile b/drivers/char/ipmi/lingsi/Makefile
+index 7942e89c03d2..f936bab9f289 100644
+--- a/drivers/char/ipmi/lingsi/Makefile
++++ b/drivers/char/ipmi/lingsi/Makefile
+@@ -1,8 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0
+-lingsi_espi-objs                   := lingsi_espi.o lingsi_espi_lpc_common.o
+-lingsi_lpc-objs                    := lingsi_lpc.o lingsi_espi_lpc_common.o
+-obj-$(CONFIG_LINGSI_ESPI)          += lingsi_espi.o
+-obj-$(CONFIG_LINGSI_LPC)           += lingsi_lpc.o
++obj-$(CONFIG_LINGSI_ESPI)          += lingsi_espi.o lingsi_espi_lpc_common.o
++obj-$(CONFIG_LINGSI_LPC)           += lingsi_lpc.o lingsi_espi_lpc_common.o
+ obj-$(CONFIG_LINGSI_HOST_DEV_BMC)  += lingsi_host_dev.o
+ obj-$(CONFIG_LINGSI_VUART_BMC)     += lingsi_vuart.o
+ obj-$(CONFIG_LINGSI_SIO_BMC)       += lingsi_sio.o
+-- 
+2.39.2
+

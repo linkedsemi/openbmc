@@ -1,0 +1,3364 @@
+From fd5932953f0bce979abf71511605604df109503d Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Fri, 19 Jul 2024 16:21:00 +0800
+Subject: [PATCH 2/4] add lingsi LPC support
+
+---
+Upstream-Status: Pending
+
+ drivers/char/ipmi/lingsi/Kconfig              |  15 +-
+ drivers/char/ipmi/lingsi/Makefile             |  14 +-
+ drivers/char/ipmi/lingsi/lingsi_espi.c        | 649 +++++++++---------
+ .../char/ipmi/lingsi/lingsi_espi_lpc_common.c |  74 +-
+ .../char/ipmi/lingsi/lingsi_espi_lpc_common.h |  75 +-
+ drivers/char/ipmi/lingsi/lingsi_host_dev.c    | 124 ++--
+ drivers/char/ipmi/lingsi/lingsi_host_vuart.c  | 294 ++++++++
+ drivers/char/ipmi/lingsi/lingsi_kcs.c         | 143 ++--
+ drivers/char/ipmi/lingsi/lingsi_lpc.c         | 242 +++++++
+ drivers/char/ipmi/lingsi/lingsi_mmbi.c        | 190 ++---
+ drivers/char/ipmi/lingsi/lingsi_sio.c         | 142 ++--
+ drivers/char/ipmi/lingsi/lingsi_vuart.c       | 427 ++----------
+ drivers/char/ipmi/lingsi/lingsi_vuart.h       |  15 +
+ 13 files changed, 1263 insertions(+), 1141 deletions(-)
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_host_vuart.c
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_lpc.c
+ create mode 100644 drivers/char/ipmi/lingsi/lingsi_vuart.h
+
+diff --git a/drivers/char/ipmi/lingsi/Kconfig b/drivers/char/ipmi/lingsi/Kconfig
+index 9504b4cb3639..63b6c3f23e97 100644
+--- a/drivers/char/ipmi/lingsi/Kconfig
++++ b/drivers/char/ipmi/lingsi/Kconfig
+@@ -1,14 +1,19 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ if ARCH_LINGSI || COMPILE_TEST
+ 
+-config LINGSI_ESPI_LPC
+-    bool "LINGSI_ESPI_LPC"
++config LINGSI_ESPI
++    bool "LINGSI_ESPI"
++    help
++      TBD
++
++config LINGSI_LPC
++    bool "LINGSI_LPC"
+     help
+       TBD
+ 
+ config LINGSI_KCS_IPMI_BMC
+     select IPMI_KCS_BMC
+-    select LINGSI_ESPI_LPC
++    depends on LINGSI_ESPI || LINGSI_LPC
+     bool "LS KCS IPMI BMC driver"
+     help
+       Provides a driver for the KCS (Keyboard Controller Style) IPMI
+@@ -22,21 +27,25 @@ config LINGSI_KCS_IPMI_BMC
+ 
+ config LINGSI_MMBI_IPMI_BMC
+     bool "LINGSI_MMBI_IPMI_BMC"
++    depends on LINGSI_ESPI || LINGSI_LPC
+     help
+       TBD
+ 
+ config LINGSI_SIO_BMC
+     bool "LINGSI_SIO_BMC"
++    depends on LINGSI_ESPI || LINGSI_LPC
+     help
+       TBD
+ 
+ config LINGSI_HOST_DEV_BMC
+     bool "LINGSI_HOST_DEV_BMC"
++    depends on LINGSI_ESPI || LINGSI_LPC
+     help
+       TBD
+ 
+ config LINGSI_VUART_BMC
+     bool "LINGSI_VUART_BMC"
++    depends on LINGSI_ESPI || LINGSI_LPC
+     help
+       TBD
+ 
+diff --git a/drivers/char/ipmi/lingsi/Makefile b/drivers/char/ipmi/lingsi/Makefile
+index ae326a0f5389..7942e89c03d2 100644
+--- a/drivers/char/ipmi/lingsi/Makefile
++++ b/drivers/char/ipmi/lingsi/Makefile
+@@ -1,8 +1,10 @@
+ # SPDX-License-Identifier: GPL-2.0
+-obj-$(CONFIG_LINGSI_ESPI_LPC) += lingsi_espi_lpc.o
+-lingsi_espi_lpc-objs := lingsi_espi.o lingsi_espi_lpc_common.o
+-obj-$(CONFIG_LINGSI_HOST_DEV_BMC) += lingsi_host_dev.o
+-obj-$(CONFIG_LINGSI_VUART_BMC) += lingsi_vuart.o
+-obj-$(CONFIG_LINGSI_SIO_BMC) += lingsi_sio.o
+-obj-$(CONFIG_LINGSI_KCS_IPMI_BMC) += lingsi_kcs.o
++lingsi_espi-objs                   := lingsi_espi.o lingsi_espi_lpc_common.o
++lingsi_lpc-objs                    := lingsi_lpc.o lingsi_espi_lpc_common.o
++obj-$(CONFIG_LINGSI_ESPI)          += lingsi_espi.o
++obj-$(CONFIG_LINGSI_LPC)           += lingsi_lpc.o
++obj-$(CONFIG_LINGSI_HOST_DEV_BMC)  += lingsi_host_dev.o
++obj-$(CONFIG_LINGSI_VUART_BMC)     += lingsi_vuart.o
++obj-$(CONFIG_LINGSI_SIO_BMC)       += lingsi_sio.o
++obj-$(CONFIG_LINGSI_KCS_IPMI_BMC)  += lingsi_kcs.o
+ obj-$(CONFIG_LINGSI_MMBI_IPMI_BMC) += lingsi_mmbi.o
+diff --git a/drivers/char/ipmi/lingsi/lingsi_espi.c b/drivers/char/ipmi/lingsi/lingsi_espi.c
+index 096d7ad430f2..6985245d542c 100644
+--- a/drivers/char/ipmi/lingsi/lingsi_espi.c
++++ b/drivers/char/ipmi/lingsi/lingsi_espi.c
+@@ -13,228 +13,227 @@
+ #include "lingsi_espi_lpc_common.h"
+ #define DEVICE_NAME "lingsi-espi"
+ 
+-#define ESPI_DEV_ID              0x004
+-#define ESPI_GEN_CFG             0x008
+-#define ESPI_CRC_EN                BIT(31)
+-#define ESPI_RSP_MOD_EN            BIT(30)
+-#define ESPI_ALERT_MODE            BIT(28)
+-#define ESPI_IO_MODE_MASK        GENMASK(27,26)
+-#define ESPI_IO_MODE_SHIFT        26
+-#define ESPI_IO_MODE_SUPP_MASK    GENMASK(25,24)
+-#define ESPI_IO_MODE_SUPP_SHIFT    24
+-#define ESPI_OD_ALERT            BIT(23)
+-#define ESPI_OP_FREQ_MASK        GENMASK(22,20)
+-#define ESPI_OP_FREQ_SHIFT        20
+-#define ESPI_OD_ALERT_SUPP        BIT(19)
+-#define ESPI_OP_FREQ_SUPP_MASK    GENMASK(18,16)
+-#define ESPI_OP_FREQ_SUPP_SHIFT    16
+-#define ESPI_MAX_WAIT_MASK        GENMASK(15,12)
+-#define ESPI_MAX_WAIT_SHIFT        12
+-#define ESPI_CH_SUPP_MASK        GENMASK(7,0)
+-#define ESPI_CH_SUPP_SHIFT        0
+-#define ESPI_CH0_CFG            0x010
+-#define ESPI_PER_MAX_RD_REQ_MASK        GENMASK(14,12)
+-#define ESPI_PER_MAX_RD_REQ_SHIFT        12
+-#define ESPI_PER_MAX_PLOAD_MASK            GENMASK(10,8)
+-#define ESPI_PER_MAX_PLOAD_SHIFT        8
+-#define ESPI_PER_MAX_PLOAD_SUPP_MASK    GENMASK(6,4)
+-#define ESPI_PER_MAX_PLOAD_SUPP_SHIFT    4
++#define ESPI_DEV_ID                        0x004
++#define ESPI_GEN_CFG                       0x008
++#define ESPI_CRC_EN                        BIT(31)
++#define ESPI_RSP_MOD_EN                    BIT(30)
++#define ESPI_ALERT_MODE                    BIT(28)
++#define ESPI_IO_MODE_MASK                  GENMASK(27, 26)
++#define ESPI_IO_MODE_SHIFT                 26
++#define ESPI_IO_MODE_SUPP_MASK             GENMASK(25, 24)
++#define ESPI_IO_MODE_SUPP_SHIFT            24
++#define ESPI_OD_ALERT                      BIT(23)
++#define ESPI_OP_FREQ_MASK                  GENMASK(22, 20)
++#define ESPI_OP_FREQ_SHIFT                 20
++#define ESPI_OD_ALERT_SUPP                 BIT(19)
++#define ESPI_OP_FREQ_SUPP_MASK             GENMASK(18, 16)
++#define ESPI_OP_FREQ_SUPP_SHIFT            16
++#define ESPI_MAX_WAIT_MASK                 GENMASK(15, 12)
++#define ESPI_MAX_WAIT_SHIFT                12
++#define ESPI_CH_SUPP_MASK                  GENMASK(7, 0)
++#define ESPI_CH_SUPP_SHIFT                 0
++#define ESPI_CH0_CFG                       0x010
++#define ESPI_PER_MAX_RD_REQ_MASK           GENMASK(14, 12)
++#define ESPI_PER_MAX_RD_REQ_SHIFT          12
++#define ESPI_PER_MAX_PLOAD_MASK            GENMASK(10, 8)
++#define ESPI_PER_MAX_PLOAD_SHIFT           8
++#define ESPI_PER_MAX_PLOAD_SUPP_MASK       GENMASK(6, 4)
++#define ESPI_PER_MAX_PLOAD_SUPP_SHIFT      4
+ #define ESPI_PER_BUS_MST_EN                BIT(2)
+ #define ESPI_PER_CH_RDY                    BIT(1)
+-#define ESPI_PER_CH_EN                    BIT(0)
+-#define ESPI_CH1_CFG            0x020
+-#define ESPI_VWIR_MAX_CNT_MASK            GENMASK(21,16)
++#define ESPI_PER_CH_EN                     BIT(0)
++#define ESPI_CH1_CFG                       0x020
++#define ESPI_VWIR_MAX_CNT_MASK             GENMASK(21, 16)
+ #define ESPI_VWIR_MAX_CNT_SHIFT            16
+-#define ESPI_VWIR_MAX_CNT_SUPP_MASK        GENMASK(13,8)
+-#define ESPI_VWIR_MAX_CNT_SUPP_SHIFT    8
+-#define ESPI_VWIR_CH_RDY                BIT(1)
++#define ESPI_VWIR_MAX_CNT_SUPP_MASK        GENMASK(13, 8)
++#define ESPI_VWIR_MAX_CNT_SUPP_SHIFT       8
++#define ESPI_VWIR_CH_RDY                   BIT(1)
+ #define ESPI_VWIR_CH_EN                    BIT(0)
+-#define ESPI_CH2_CFG            0x030
+-#define ESPI_OOB_MAX_PLOAD_MASK            GENMASK(10,8)
+-#define ESPI_OOB_MAX_PLOAD_SHIFT        8
+-#define ESPI_OOB_MAX_PLOAD_SUPP_MASK    GENMASK(6,4)
+-#define ESPI_OOB_MAX_PLOAD_SUPP_SHIFT    4
++#define ESPI_CH2_CFG                       0x030
++#define ESPI_OOB_MAX_PLOAD_MASK            GENMASK(10, 8)
++#define ESPI_OOB_MAX_PLOAD_SHIFT           8
++#define ESPI_OOB_MAX_PLOAD_SUPP_MASK       GENMASK(6, 4)
++#define ESPI_OOB_MAX_PLOAD_SUPP_SHIFT      4
+ #define ESPI_OOB_CH_RDY                    BIT(1)
+-#define ESPI_OOB_CH_EN                    BIT(0)
+-#define ESPI_CH3_CFG            0x040
+-#define ESPI_FLINGSI_SHARE_SUPP_MASK        GENMASK(17,16)
+-#define ESPI_FLINGSI_SHARE_SUPP_SHIFT        16
+-#define ESPI_FLINGSI_MAX_RD_REQ_MASK        GENMASK(14,12)
+-#define ESPI_FLINGSI_MAX_RD_REQ_SHIFT        12
+-#define ESPI_FLINGSI_SHARE_MODE                BIT(11)
+-#define ESPI_FLINGSI_MAX_PLOAD_MASK            GENMASK(10,8)
+-#define ESPI_FLINGSI_MAX_PLOAD_SHIFT        8
+-#define ESPI_FLINGSI_MAX_PLOAD_SUPP_MASK    GENMASK(7,5)
+-#define ESPI_FLINGSI_MAX_PLOAD_SUPP_SHIFT    5
+-#define ESPI_FLINGSI_ERS_SIZ_MASK            GENMASK(4,2)
+-#define ESPI_FLINGSI_ERS_SIZ_SHIFT            2
+-#define ESPI_FLINGSI_CH_RDY                    BIT(1)
+-#define ESPI_FLINGSI_CH_EN                    BIT(0)
+-#define ESPI_CH3_CFG2            0x044
+-#define ESPI_FLINGSI_RPMC_SUPP_MASK            GENMASK(21,16)
+-#define ESPI_FLINGSI_RPMC_SUPP_SHIFT        16
+-#define ESPI_FLINGSI_ERS_SIZ_MST_MASK        GENMASK(15,8)
+-#define ESPI_FLINGSI_ERS_SIZ_MST_SHIFT        8
+-#define ESPI_FLINGSI_MAX_RD_REQ_SUPP_MASK    GENMASK(2,0)
+-#define ESPI_FLINGSI_MAX_RD_REQ_SUPP_SHIFT    0
+-
+-#define ESPI_UP_NPST_LEN_M1        0x100
+-#define ESPI_UP_NPST_DAT        0x104
+-#define ESPI_UP_NPST_ADR        0x108
+-#define ESPI_DN_NPST_ADR        0x10c
+-#define ESPI_UP_PSTC_LEN_M1        0x110
+-#define ESPI_UP_PSTC_DAT        0x114
+-#define ESPI_UP_PSTC_ADR        0x118
+-#define ESPI_DN_PSTC_ADR        0x11c
+-#define ESPI_UP_VWIR_LEN_M1        0x120
+-#define ESPI_UP_VWIR_DAT        0x124
+-#define ESPI_UP_VWIR_ADR        0x128
+-#define ESPI_UP_OOBP_LEN_M1        0x130
+-#define ESPI_UP_OOBP_DAT        0x134
+-#define ESPI_UP_OOBP_ADR        0x138
+-#define ESPI_DN_OOBP_ADR        0x13c
+-#define ESPI_UP_FLASH_LEN_M1    0x140
+-#define ESPI_UP_FLASH_DAT        0x144
+-#define ESPI_UP_FLASH_ADR        0x148
+-#define ESPI_DN_FLASH_ADR        0X14C
+-
+-#define ESPI_ICAP_CTRL            0x150
++#define ESPI_OOB_CH_EN                     BIT(0)
++#define ESPI_CH3_CFG                       0x040
++#define ESPI_FLINGSI_SHARE_SUPP_MASK       GENMASK(17, 16)
++#define ESPI_FLINGSI_SHARE_SUPP_SHIFT      16
++#define ESPI_FLINGSI_MAX_RD_REQ_MASK       GENMASK(14, 12)
++#define ESPI_FLINGSI_MAX_RD_REQ_SHIFT      12
++#define ESPI_FLINGSI_SHARE_MODE            BIT(11)
++#define ESPI_FLINGSI_MAX_PLOAD_MASK        GENMASK(10, 8)
++#define ESPI_FLINGSI_MAX_PLOAD_SHIFT       8
++#define ESPI_FLINGSI_MAX_PLOAD_SUPP_MASK   GENMASK(7, 5)
++#define ESPI_FLINGSI_MAX_PLOAD_SUPP_SHIFT  5
++#define ESPI_FLINGSI_ERS_SIZ_MASK          GENMASK(4, 2)
++#define ESPI_FLINGSI_ERS_SIZ_SHIFT         2
++#define ESPI_FLINGSI_CH_RDY                BIT(1)
++#define ESPI_FLINGSI_CH_EN                 BIT(0)
++#define ESPI_CH3_CFG2                      0x044
++#define ESPI_FLINGSI_RPMC_SUPP_MASK        GENMASK(21, 16)
++#define ESPI_FLINGSI_RPMC_SUPP_SHIFT       16
++#define ESPI_FLINGSI_ERS_SIZ_MST_MASK      GENMASK(15, 8)
++#define ESPI_FLINGSI_ERS_SIZ_MST_SHIFT     8
++#define ESPI_FLINGSI_MAX_RD_REQ_SUPP_MASK  GENMASK(2, 0)
++#define ESPI_FLINGSI_MAX_RD_REQ_SUPP_SHIFT 0
++
++#define ESPI_UP_NPST_LEN_M1  0x100
++#define ESPI_UP_NPST_DAT     0x104
++#define ESPI_UP_NPST_ADR     0x108
++#define ESPI_DN_NPST_ADR     0x10c
++#define ESPI_UP_PSTC_LEN_M1  0x110
++#define ESPI_UP_PSTC_DAT     0x114
++#define ESPI_UP_PSTC_ADR     0x118
++#define ESPI_DN_PSTC_ADR     0x11c
++#define ESPI_UP_VWIR_LEN_M1  0x120
++#define ESPI_UP_VWIR_DAT     0x124
++#define ESPI_UP_VWIR_ADR     0x128
++#define ESPI_UP_OOBP_LEN_M1  0x130
++#define ESPI_UP_OOBP_DAT     0x134
++#define ESPI_UP_OOBP_ADR     0x138
++#define ESPI_DN_OOBP_ADR     0x13c
++#define ESPI_UP_FLASH_LEN_M1 0x140
++#define ESPI_UP_FLASH_DAT    0x144
++#define ESPI_UP_FLASH_ADR    0x148
++#define ESPI_DN_FLASH_ADR    0X14C
++
++#define ESPI_ICAP_CTRL             0x150
+ #define ESPI_STATUS_SET            0x154
+-#define ESPI_ALERT_CLEAR                BIT(17)
+-#define ESPI_ALERT_SET                    BIT(16)
+-#define ESPI_SET_FLASH_NP_AVAIL            BIT(13)
+-#define ESPI_SET_FLINGSIH_C_AVAIL            BIT(12)
+-#define ESPI_SET_FLASH_NP_FREE            BIT(9)
+-#define ESPI_SET_FLASH_C_FREE            BIT(8)
+-#define ESPI_SET_OOB_AVAIL                BIT(7)
+-#define ESPI_SET_VWIRE_AVAIL            BIT(6)
+-#define ESPI_SET_PERI_NP_AVAIL            BIT(5)
+-#define ESPI_SET_PERI_PC_AVAIL            BIT(4)
+-#define ESPI_SET_OOB_FREE                BIT(3)
+-#define ESPI_SET_VWIRE_FREE                BIT(2)
+-#define ESPI_SET_PERI_NP_FREE            BIT(1)
+-#define ESPI_SET_PERI_PC_FREE            BIT(0)
+-#define ESPI_DN_VWIR_IDX_CTRL0    0x160
+-#define ESPI_DN_VWIR_IDX_P03_MASK        GENMASK(31,24)
+-#define ESPI_DN_VWIR_IDX_P03_SHIFT        24
+-#define ESPI_DN_VWIR_IDX_P02_MASK        GENMASK(23,16)
+-#define ESPI_DN_VWIR_IDX_P02_SHIFT        16
+-#define ESPI_DN_VWIR_IDX_P01_MASK        GENMASK(15,8)
+-#define ESPI_DN_VWIR_IDX_P01_SHIFT        8
+-#define ESPI_DN_VWIR_IDX_P00_MASK        GENMASK(7,0)
+-#define ESPI_DN_VWIR_IDX_P00_SHIFT        0
+-#define ESPI_DN_VWIR_IDX_CTRL1    0x164
+-#define ESPI_DN_VWIR_IDX_P07_MASK        GENMASK(31,24)
+-#define ESPI_DN_VWIR_IDX_P07_SHIFT        24
+-#define ESPI_DN_VWIR_IDX_P06_MASK        GENMASK(23,16)
+-#define ESPI_DN_VWIR_IDX_P06_SHIFT        16
+-#define ESPI_DN_VWIR_IDX_P05_MASK        GENMASK(15,8)
+-#define ESPI_DN_VWIR_IDX_P05_SHIFT        8
+-#define ESPI_DN_VWIR_IDX_P04_MASK        GENMASK(7,0)
+-#define ESPI_DN_VWIR_IDX_P04_SHIFT        0
+-#define ESPI_DN_VWIR_VAL0        0x180
+-#define ESPI_DN_VWIR_VAL_P03_MASK        GENMASK(27,24)
+-#define ESPI_DN_VWIR_VAL_P03_SHIFT        24
+-#define ESPI_DN_VWIR_VAL_P02_MASK        GENMASK(19,16)
+-#define ESPI_DN_VWIR_VAL_P02_SHIFT        16
+-#define ESPI_DN_VWIR_VAL_P01_MASK        GENMASK(11,8)
+-#define ESPI_DN_VWIR_VAL_P01_SHIFT        8
+-#define ESPI_DN_VWIR_VAL_P00_MASK        GENMASK(3,0)
+-#define ESPI_DN_VWIR_VAL_P00_SHIFT        0
+-#define ESPI_DN_VWIR_VAL1        0x184
+-#define ESPI_DN_VWIR_VAL_P07_MASK        GENMASK(27,24)
+-#define ESPI_DN_VWIR_VAL_P07_SHIFT        24
+-#define ESPI_DN_VWIR_VAL_P06_MASK        GENMASK(19,16)
+-#define ESPI_DN_VWIR_VAL_P06_SHIFT        16
+-#define ESPI_DN_VWIR_VAL_P05_MASK        GENMASK(11,8)
+-#define ESPI_DN_VWIR_VAL_P05_SHIFT        8
+-#define ESPI_DN_VWIR_VAL_P04_MASK        GENMASK(3,0)
+-#define ESPI_DN_VWIR_VAL_P04_SHIFT        0
+-#define ESPI_DN_VWIR_SYS0        0x1a0
+-#define ESPI_DN_VWIR_VAL_S03_MASK        GENMASK(27,24)
+-#define ESPI_DN_VWIR_VAL_S03_SHIFT        24
+-#define ESPI_DN_VWIR_VAL_S02_MASK        GENMASK(19,16)
+-#define ESPI_DN_VWIR_VAL_S02_SHIFT        16
+-#define ESPI_DN_VWIR_SYS1        0x1a4
+-#define ESPI_DN_VWIR_VAL_S07_MASK        GENMASK(27,24)
+-#define ESPI_DN_VWIR_VAL_S07_SHIFT        24
+-
+-#define ESPI_INT_MASK            0x200
+-#define ESPI_INT_CLR            0x204
+-#define ESPI_INT_STT            0x208
+-#define ESPI_INT_RAW            0x20c
+-#define ESPI_INT_DN_RESET                BIT(26)
+-#define ESPI_INT_DN_VWIR_P07            BIT(25)
+-#define ESPI_INT_DN_VWIR_P06            BIT(24)
+-#define ESPI_INT_DN_VWIR_P05            BIT(23)
+-#define ESPI_INT_DN_VWIR_P04            BIT(22)
+-#define ESPI_INT_DN_VWIR_P03            BIT(21)
+-#define ESPI_INT_DN_VWIR_P02            BIT(20)
+-#define ESPI_INT_DN_VWIR_P01            BIT(19)
+-#define ESPI_INT_DN_VWIR_P00            BIT(18)
+-#define ESPI_INT_DN_VWIR_S07            BIT(17)
+-#define ESPI_INT_DN_VWIR_S03            BIT(16)
+-#define ESPI_INT_DN_VWIR_S02            BIT(15)
+-#define ESPI_INT_DN_CFG                    BIT(14)
+-#define ESPI_INT_UP_FIFO_UDR            BIT(13)
+-#define ESPI_INT_DN_FIFO_OVR            BIT(12)
+-#define ESPI_INT_FLINGSIN_AVAIL                BIT(11)
+-#define ESPI_INT_FLINGSIC_AVAIL                BIT(10)
+-#define ESPI_INT_FLINGSIN_FREE                BIT(9)
+-#define ESPI_INT_FLINGSIC_FREE                BIT(8)
+-#define ESPI_INT_OOB_AVAIL                BIT(7)
+-#define ESPI_INT_VWIR_AVAIL                BIT(6)
+-#define ESPI_INT_NPST_AVAIL                BIT(5)
+-#define ESPI_INT_PSTC_AVAIL                BIT(4)
+-#define ESPI_INT_OOB_FREE                BIT(3)
+-#define ESPI_INT_VWIR_FREE                BIT(2)
+-#define ESPI_INT_NPST_FREE                BIT(1)
+-#define ESPI_INT_PSTC_FREE                BIT(0)
+-#define ESPI_STATUS                0x210
+-#define ESPI_STATUS_SENT        0x214
+-
+-#define ESPI_SYS_EVT_2_SLP_S5_N    BIT(2)
++#define ESPI_ALERT_CLEAR           BIT(17)
++#define ESPI_ALERT_SET             BIT(16)
++#define ESPI_SET_FLASH_NP_AVAIL    BIT(13)
++#define ESPI_SET_FLSH_C_AVAIL      BIT(12)
++#define ESPI_SET_FLASH_NP_FREE     BIT(9)
++#define ESPI_SET_FLASH_C_FREE      BIT(8)
++#define ESPI_SET_OOB_AVAIL         BIT(7)
++#define ESPI_SET_VWIRE_AVAIL       BIT(6)
++#define ESPI_SET_PERI_NP_AVAIL     BIT(5)
++#define ESPI_SET_PERI_PC_AVAIL     BIT(4)
++#define ESPI_SET_OOB_FREE          BIT(3)
++#define ESPI_SET_VWIRE_FREE        BIT(2)
++#define ESPI_SET_PERI_NP_FREE      BIT(1)
++#define ESPI_SET_PERI_PC_FREE      BIT(0)
++#define ESPI_DN_VWIR_IDX_CTRL0     0x160
++#define ESPI_DN_VWIR_IDX_P03_MASK  GENMASK(31, 24)
++#define ESPI_DN_VWIR_IDX_P03_SHIFT 24
++#define ESPI_DN_VWIR_IDX_P02_MASK  GENMASK(23, 16)
++#define ESPI_DN_VWIR_IDX_P02_SHIFT 16
++#define ESPI_DN_VWIR_IDX_P01_MASK  GENMASK(15, 8)
++#define ESPI_DN_VWIR_IDX_P01_SHIFT 8
++#define ESPI_DN_VWIR_IDX_P00_MASK  GENMASK(7, 0)
++#define ESPI_DN_VWIR_IDX_P00_SHIFT 0
++#define ESPI_DN_VWIR_IDX_CTRL1     0x164
++#define ESPI_DN_VWIR_IDX_P07_MASK  GENMASK(31, 24)
++#define ESPI_DN_VWIR_IDX_P07_SHIFT 24
++#define ESPI_DN_VWIR_IDX_P06_MASK  GENMASK(23, 16)
++#define ESPI_DN_VWIR_IDX_P06_SHIFT 16
++#define ESPI_DN_VWIR_IDX_P05_MASK  GENMASK(15, 8)
++#define ESPI_DN_VWIR_IDX_P05_SHIFT 8
++#define ESPI_DN_VWIR_IDX_P04_MASK  GENMASK(7, 0)
++#define ESPI_DN_VWIR_IDX_P04_SHIFT 0
++#define ESPI_DN_VWIR_VAL0          0x180
++#define ESPI_DN_VWIR_VAL_P03_MASK  GENMASK(27, 24)
++#define ESPI_DN_VWIR_VAL_P03_SHIFT 24
++#define ESPI_DN_VWIR_VAL_P02_MASK  GENMASK(19, 16)
++#define ESPI_DN_VWIR_VAL_P02_SHIFT 16
++#define ESPI_DN_VWIR_VAL_P01_MASK  GENMASK(11, 8)
++#define ESPI_DN_VWIR_VAL_P01_SHIFT 8
++#define ESPI_DN_VWIR_VAL_P00_MASK  GENMASK(3, 0)
++#define ESPI_DN_VWIR_VAL_P00_SHIFT 0
++#define ESPI_DN_VWIR_VAL1          0x184
++#define ESPI_DN_VWIR_VAL_P07_MASK  GENMASK(27, 24)
++#define ESPI_DN_VWIR_VAL_P07_SHIFT 24
++#define ESPI_DN_VWIR_VAL_P06_MASK  GENMASK(19, 16)
++#define ESPI_DN_VWIR_VAL_P06_SHIFT 16
++#define ESPI_DN_VWIR_VAL_P05_MASK  GENMASK(11, 8)
++#define ESPI_DN_VWIR_VAL_P05_SHIFT 8
++#define ESPI_DN_VWIR_VAL_P04_MASK  GENMASK(3, 0)
++#define ESPI_DN_VWIR_VAL_P04_SHIFT 0
++#define ESPI_DN_VWIR_SYS0          0x1a0
++#define ESPI_DN_VWIR_VAL_S03_MASK  GENMASK(27, 24)
++#define ESPI_DN_VWIR_VAL_S03_SHIFT 24
++#define ESPI_DN_VWIR_VAL_S02_MASK  GENMASK(19, 16)
++#define ESPI_DN_VWIR_VAL_S02_SHIFT 16
++#define ESPI_DN_VWIR_SYS1          0x1a4
++#define ESPI_DN_VWIR_VAL_S07_MASK  GENMASK(27, 24)
++#define ESPI_DN_VWIR_VAL_S07_SHIFT 24
++
++#define ESPI_INT_MASK        0x200
++#define ESPI_INT_CLR         0x204
++#define ESPI_INT_STT         0x208
++#define ESPI_INT_RAW         0x20c
++#define ESPI_INT_DN_RESET    BIT(26)
++#define ESPI_INT_DN_VWIR_P07 BIT(25)
++#define ESPI_INT_DN_VWIR_P06 BIT(24)
++#define ESPI_INT_DN_VWIR_P05 BIT(23)
++#define ESPI_INT_DN_VWIR_P04 BIT(22)
++#define ESPI_INT_DN_VWIR_P03 BIT(21)
++#define ESPI_INT_DN_VWIR_P02 BIT(20)
++#define ESPI_INT_DN_VWIR_P01 BIT(19)
++#define ESPI_INT_DN_VWIR_P00 BIT(18)
++#define ESPI_INT_DN_VWIR_S07 BIT(17)
++#define ESPI_INT_DN_VWIR_S03 BIT(16)
++#define ESPI_INT_DN_VWIR_S02 BIT(15)
++#define ESPI_INT_DN_CFG      BIT(14)
++#define ESPI_INT_UP_FIFO_UDR BIT(13)
++#define ESPI_INT_DN_FIFO_OVR BIT(12)
++#define ESPI_INT_FLSN_AVAIL  BIT(11)
++#define ESPI_INT_FLSC_AVAIL  BIT(10)
++#define ESPI_INT_FLSN_FREE   BIT(9)
++#define ESPI_INT_FLSC_FREE   BIT(8)
++#define ESPI_INT_OOB_AVAIL   BIT(7)
++#define ESPI_INT_VWIR_AVAIL  BIT(6)
++#define ESPI_INT_NPST_AVAIL  BIT(5)
++#define ESPI_INT_PSTC_AVAIL  BIT(4)
++#define ESPI_INT_OOB_FREE    BIT(3)
++#define ESPI_INT_VWIR_FREE   BIT(2)
++#define ESPI_INT_NPST_FREE   BIT(1)
++#define ESPI_INT_PSTC_FREE   BIT(0)
++#define ESPI_STATUS          0x210
++#define ESPI_STATUS_SENT     0x214
++
++#define ESPI_SYS_EVT_2_SLP_S5_N BIT(2)
+ #define ESPI_SYS_EVT_2_SLP_S4_N BIT(1)
+ #define ESPI_SYS_EVT_2_SLP_S3_N BIT(0)
+ 
+ #define ESPI_SYS_EVT_3_OOB_RST_WARN BIT(2)
+-#define ESPI_SYS_EVT_3_PLTRST_N BIT(1)
+-#define ESPI_SYS_EVT_3_SUS_STAT_N BIT(0)
++#define ESPI_SYS_EVT_3_PLTRST_N     BIT(1)
++#define ESPI_SYS_EVT_3_SUS_STAT_N   BIT(0)
+ 
+-#define ESPI_SYS_EVT_4_PME_N_VLD BIT(7)
+-#define ESPI_SYS_EVT_4_WAKE_N_VLD BIT(6)
++#define ESPI_SYS_EVT_4_PME_N_VLD       BIT(7)
++#define ESPI_SYS_EVT_4_WAKE_N_VLD      BIT(6)
+ #define ESPI_SYS_EVT_4_OOB_RST_ACK_VLD BIT(4)
+-#define ESPI_SYS_EVT_4_PME_N BIT(3)
+-#define ESPI_SYS_EVT_4_WAKE_N BIT(2)
+-#define ESPI_SYS_EVT_4_OOB_RST_ACK BIT(0)
++#define ESPI_SYS_EVT_4_PME_N           BIT(3)
++#define ESPI_SYS_EVT_4_WAKE_N          BIT(2)
++#define ESPI_SYS_EVT_4_OOB_RST_ACK     BIT(0)
+ 
+ #define ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_STATUS_VLD BIT(7)
+-#define ESPI_SYS_EVT_5_ERROR_NONFATAL_VLD BIT(6)
+-#define ESPI_SYS_EVT_5_ERROR_FATAL_VLD BIT(5)
+-#define ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE_VLD BIT(4)
+-#define ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_STATUS BIT(3)
+-#define ESPI_SYS_EVT_5_ERROR_NONFATAL BIT(2)
+-#define ESPI_SYS_EVT_5_ERROR_FATAL BIT(1)
+-#define ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE BIT(0)
++#define ESPI_SYS_EVT_5_ERROR_NONFATAL_VLD         BIT(6)
++#define ESPI_SYS_EVT_5_ERROR_FATAL_VLD            BIT(5)
++#define ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE_VLD   BIT(4)
++#define ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_STATUS     BIT(3)
++#define ESPI_SYS_EVT_5_ERROR_NONFATAL             BIT(2)
++#define ESPI_SYS_EVT_5_ERROR_FATAL                BIT(1)
++#define ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE       BIT(0)
+ 
+ #define ESPI_SYS_EVT_6_HOST_RST_ACK_VLD BIT(7)
+-#define ESPI_SYS_EVT_6_RCIN_N_VLD BIT(6)
+-#define ESPI_SYS_EVT_6_SMI_N_VLD BIT(5)
+-#define ESPI_SYS_EVT_6_SCI_N_VLD BIT(4)
+-#define ESPI_SYS_EVT_6_HOST_RST_ACK BIT(3)
+-#define ESPI_SYS_EVT_6_RCIN_N BIT(2)
+-#define ESPI_SYS_EVT_6_SMI_N BIT(1)
+-#define ESPI_SYS_EVT_6_SCI_N BIT(0)
+-
+-#define ESPI_SYS_EVT_7_NMIOUT_N BIT(2)
+-#define ESPI_SYS_EVT_7_SMIOUT_N BIT(1)
++#define ESPI_SYS_EVT_6_RCIN_N_VLD       BIT(6)
++#define ESPI_SYS_EVT_6_SMI_N_VLD        BIT(5)
++#define ESPI_SYS_EVT_6_SCI_N_VLD        BIT(4)
++#define ESPI_SYS_EVT_6_HOST_RST_ACK     BIT(3)
++#define ESPI_SYS_EVT_6_RCIN_N           BIT(2)
++#define ESPI_SYS_EVT_6_SMI_N            BIT(1)
++#define ESPI_SYS_EVT_6_SCI_N            BIT(0)
++
++#define ESPI_SYS_EVT_7_NMIOUT_N      BIT(2)
++#define ESPI_SYS_EVT_7_SMIOUT_N      BIT(1)
+ #define ESPI_SYS_EVT_7_HOST_RST_WARN BIT(0)
+ 
+-
+-#define ESPI_NP_RX_BUF_OFFSET    0x800
+-#define ESPI_PC_RX_BUF_OFFSET    0x900
+-#define ESPI_PC_TX_BUF_OFFSET    0xa00
+-#define ESPI_VW_TX_BUF_OFFSET   0xb00
++#define ESPI_NP_RX_BUF_OFFSET 0x800
++#define ESPI_PC_RX_BUF_OFFSET 0x900
++#define ESPI_PC_TX_BUF_OFFSET 0xa00
++#define ESPI_VW_TX_BUF_OFFSET 0xb00
+ 
+ static inline u8 *np_rx_buf_get(void __iomem *base)
+ {
+@@ -256,189 +255,177 @@ static inline u8 *vw_tx_buf_get(void __iomem *base)
+     return base + ESPI_VW_TX_BUF_OFFSET;
+ }
+ 
+-static void espi_vw_tx(struct lingsi_espi_lpc_struct *espi,u8 count,u8 idx,u8 val,...)
++static void espi_vw_tx(struct lingsi_espi_lpc_struct *espi, u8 count, u8 idx, u8 val, ...)
+ {
+     unsigned long flags;
+     va_list vargs;
+     u32 espi_stat;
+-    u32 vw_first_word = val<<16|idx<<8|(count - 1);
++    u32 vw_first_word = val << 16 | idx << 8 | (count - 1);
+     u8 *vw_tx = vw_tx_buf_get(espi->base);
+-    spin_lock_irqsave(&espi->vw_tx_lock,flags);
+-    do{
+-        espi_stat = ioread32(espi->base+ESPI_STATUS);
+-    }while(espi_stat & ESPI_SET_VWIRE_AVAIL);
+-    iowrite32(count*2,espi->base+ESPI_UP_VWIR_LEN_M1);
++    spin_lock_irqsave(&espi->u.espi.vw_tx_lock, flags);
++    do {
++        espi_stat = ioread32(espi->base + ESPI_STATUS);
++    } while (espi_stat & ESPI_SET_VWIRE_AVAIL);
++    iowrite32(count * 2, espi->base + ESPI_UP_VWIR_LEN_M1);
+     count--;
+-    va_start(vargs,val);
+-    if(count>0)
+-    {
+-        idx = va_arg(vargs,unsigned);
+-        val = va_arg(vargs,unsigned);
+-        vw_first_word |= idx<<24;
++    va_start(vargs, val);
++    if (count > 0) {
++        idx = va_arg(vargs, unsigned);
++        val = va_arg(vargs, unsigned);
++        vw_first_word |= idx << 24;
+         *vw_tx++ = val;
+         count--;
+     }
+-    while(count--)
+-    {
+-        idx = va_arg(vargs,unsigned);
+-        val = va_arg(vargs,unsigned);
++    while (count--) {
++        idx = va_arg(vargs, unsigned);
++        val = va_arg(vargs, unsigned);
+         *vw_tx++ = idx;
+         *vw_tx++ = val;
+     }
+     va_end(vargs);
+-    iowrite32(vw_first_word,espi->base+ESPI_UP_VWIR_DAT);
+-    iowrite32(ESPI_ALERT_SET|ESPI_SET_VWIRE_AVAIL,espi->base+ESPI_STATUS_SET);
+-    spin_unlock_irqrestore(&espi->vw_tx_lock,flags);
++    iowrite32(vw_first_word, espi->base + ESPI_UP_VWIR_DAT);
++    iowrite32(ESPI_ALERT_SET | ESPI_SET_VWIRE_AVAIL, espi->base + ESPI_STATUS_SET);
++    spin_unlock_irqrestore(&espi->u.espi.vw_tx_lock, flags);
+ }
+ 
+ static void espi_send_boot_done(struct lingsi_espi_lpc_struct *espi)
+ {
+-    espi_vw_tx(espi,1,5,ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE_VLD|ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE|
+-                        ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_STATUS_VLD|ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_STATUS);
++    espi_vw_tx(espi, 1, 5, ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE_VLD | ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_DONE | ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_STATUS_VLD | ESPI_SYS_EVT_5_SLAVE_BOOT_LOAD_STATUS);
+ }
+ 
+ static void espi_send_oob_rst_ack(struct lingsi_espi_lpc_struct *espi)
+ {
+-    espi_vw_tx(espi,1,4,ESPI_SYS_EVT_4_OOB_RST_ACK_VLD|ESPI_SYS_EVT_4_OOB_RST_ACK);
++    espi_vw_tx(espi, 1, 4, ESPI_SYS_EVT_4_OOB_RST_ACK_VLD | ESPI_SYS_EVT_4_OOB_RST_ACK);
+ }
+ 
+ static void espi_send_host_rst_ack(struct lingsi_espi_lpc_struct *espi)
+ {
+-    espi_vw_tx(espi,1,6,ESPI_SYS_EVT_6_HOST_RST_ACK_VLD|ESPI_SYS_EVT_6_HOST_RST_ACK);
++    espi_vw_tx(espi, 1, 6, ESPI_SYS_EVT_6_HOST_RST_ACK_VLD | ESPI_SYS_EVT_6_HOST_RST_ACK);
+ }
+ 
+-static void espi_send_edge_int_evt(struct lingsi_espi_lpc_struct *espi,u8 idx)
++static void espi_send_edge_int_evt(struct lingsi_espi_lpc_struct *espi, u8 idx)
+ {
+-    espi_vw_tx(espi,2,idx&0x80?1:0,1<<7|(idx&0x7f),idx&0x80?1:0,idx&0x7f);
++    espi_vw_tx(espi, 2, idx & 0x80 ? 1 : 0, 1 << 7 | (idx & 0x7f), idx & 0x80 ? 1 : 0, idx & 0x7f);
+ }
+ 
+-static void espi_send_level_int_evt(struct lingsi_espi_lpc_struct *espi,u8 idx,u8 active)
++static void espi_send_level_int_evt(struct lingsi_espi_lpc_struct *espi, u8 idx, u8 active)
+ {
+-    espi_vw_tx(espi,1,idx&0x80?1:0,active<<7|(idx&0x7f));
++    espi_vw_tx(espi, 1, idx & 0x80 ? 1 : 0, active << 7 | (idx & 0x7f));
+ }
+ 
+-static void mem_io_rd_rsp_pkt_build(u8 len,u32 data,u8 *up_data_buf,u32 *up_first_word,u16 *up_len)
++static void mem_io_rd_rsp_pkt_build(u8 len, u32 data, u8 *up_data_buf, u32 *up_first_word, u16 *up_len)
+ {
+-    *up_first_word = 0x0f| len<<16|(data & 0xff)<<24;
+-    *up_len = 3+len;
+-    up_data_buf[0] = data>>8;
+-    up_data_buf[1] = data>>16;
+-    up_data_buf[2] = data>>24;
++    *up_first_word = 0x0f | len << 16 | (data & 0xff) << 24;
++    *up_len = 3 + len;
++    up_data_buf[0] = data >> 8;
++    up_data_buf[1] = data >> 16;
++    up_data_buf[2] = data >> 24;
+ }
+ 
+ static irqreturn_t lingsi_espi_irq(int irq, void *arg)
+ {
+     struct lingsi_espi_lpc_struct *espi = arg;
+-    unsigned int_stt = ioread32(espi->base+ESPI_INT_STT);
+-    if(int_stt & ESPI_INT_NPST_FREE)
+-    {
++    unsigned int_stt = ioread32(espi->base + ESPI_INT_STT);
++    if (int_stt & ESPI_INT_NPST_FREE) {
+         u8 *rx = np_rx_buf_get(espi->base);
+         u8 opcode = rx[0];
+-        iowrite32(ESPI_INT_NPST_FREE,espi->base+ESPI_INT_CLR);
+-        if((opcode&~0xf)==0x40)
+-        {
++        iowrite32(ESPI_INT_NPST_FREE, espi->base + ESPI_INT_CLR);
++        if ((opcode & ~0xf) == 0x40) {
+             u32 up_first_word = 0;
+             u16 up_len = 1;
+-            u8 len = (opcode&0x3) + 1;
++            u8 len = (opcode & 0x3) + 1;
+             u8 *up_data_remain = pc_tx_buf_get(espi->base);
+             u32 res;
+-            if(opcode&0x8)    //PUT_MEMRD32_SHORT
+-            {
+-                u32 addr = rx[1]<<24|rx[2]<<16|rx[3]<<8|rx[4];
+-                // BUG_ON((opcode&~0x3));
+-                memrd_short(espi,len,addr,&res);
+-                mem_io_rd_rsp_pkt_build(len,res,up_data_remain,&up_first_word,&up_len);
+-            }else
++            if (opcode & 0x8) //PUT_MEMRD32_SHORT
+             {
+-                u16 addr = rx[1]<<8 | rx[2];
+-                if(opcode&0x4) //PUT_IOWR_SHORT
++                u32 addr = rx[1] << 24 | rx[2] << 16 | rx[3] << 8 | rx[4];
++                BUG_ON(opcode & 0x4);
++                memrd_short(espi, len, addr, &res);
++                mem_io_rd_rsp_pkt_build(len, res, up_data_remain, &up_first_word, &up_len);
++            } else {
++                u16 addr = rx[1] << 8 | rx[2];
++                if (opcode & 0x4) //PUT_IOWR_SHORT
+                 {
+-                    iowr_short(espi,len,addr,&rx[3]);
++                    iowr_short(espi, len, addr, &rx[3]);
+                     up_first_word = 6;
+                     up_len = 3;
+-                }else    //PUT_IORD_SHORT
++                } else //PUT_IORD_SHORT
+                 {
+-                    iord_short(espi,len,addr,&res);
+-                    mem_io_rd_rsp_pkt_build(len,res,up_data_remain,&up_first_word,&up_len);
++                    iord_short(espi, len, addr, &res);
++                    mem_io_rd_rsp_pkt_build(len, res, up_data_remain, &up_first_word, &up_len);
+                 }
+             }
+-            iowrite32(up_first_word,espi->base+ESPI_UP_PSTC_DAT);
+-            iowrite32(up_len-1,espi->base+ESPI_UP_PSTC_LEN_M1);
++            iowrite32(up_first_word, espi->base + ESPI_UP_PSTC_DAT);
++            iowrite32(up_len - 1, espi->base + ESPI_UP_PSTC_LEN_M1);
+         }
+-        iowrite32(ESPI_ALERT_SET|ESPI_SET_PERI_PC_AVAIL|ESPI_SET_PERI_NP_FREE,espi->base+ESPI_STATUS_SET);
++        iowrite32(ESPI_ALERT_SET | ESPI_SET_PERI_PC_AVAIL | ESPI_SET_PERI_NP_FREE, espi->base + ESPI_STATUS_SET);
+     }
+-    if(int_stt & ESPI_INT_PSTC_FREE)
+-    {
++    if (int_stt & ESPI_INT_PSTC_FREE) {
+         u8 *rx = pc_rx_buf_get(espi->base);
+         u8 opcode = rx[0];
+-        iowrite32(ESPI_INT_PSTC_FREE,espi->base+ESPI_INT_CLR);
+-        if((opcode&~0x3)==0x4c) //PUT_MEMWR32_SHORT
++        iowrite32(ESPI_INT_PSTC_FREE, espi->base + ESPI_INT_CLR);
++        if ((opcode & ~0x3) == 0x4c) //PUT_MEMWR32_SHORT
+         {
+             u8 len = (opcode & 0x3) + 1;
+-            u32 addr = rx[1]<<24|rx[2]<<16|rx[3]<<8|rx[4];
+-            memwr_short(espi,len,addr,&rx[5]);
++            u32 addr = rx[1] << 24 | rx[2] << 16 | rx[3] << 8 | rx[4];
++            memwr_short(espi, len, addr, &rx[5]);
+         }
+ 
+-        iowrite32(ESPI_SET_PERI_PC_FREE,espi->base+ESPI_STATUS_SET);
++        iowrite32(ESPI_SET_PERI_PC_FREE, espi->base + ESPI_STATUS_SET);
+     }
+-    if(int_stt & ESPI_INT_DN_VWIR_S02)
+-    {
+-        u32 dn_vwir_sys0 = ioread32(espi->base+ESPI_DN_VWIR_SYS0);
+-        u8 s02 = dn_vwir_sys0>>16&0xf;
+-        espi->slp_s3_n = s02&ESPI_SYS_EVT_2_SLP_S3_N ? 1:0;
+-        espi->slp_s4_n = s02&ESPI_SYS_EVT_2_SLP_S4_N ? 1:0;
+-        espi->slp_s5_n = s02&ESPI_SYS_EVT_2_SLP_S5_N ? 1:0;
+-        iowrite32(ESPI_INT_DN_VWIR_S02,espi->base+ESPI_INT_CLR);
++    if (int_stt & ESPI_INT_DN_VWIR_S02) {
++        u32 dn_vwir_sys0 = ioread32(espi->base + ESPI_DN_VWIR_SYS0);
++        u8 s02 = dn_vwir_sys0 >> 16 & 0xf;
++        espi->u.espi.slp_s3_n = s02 & ESPI_SYS_EVT_2_SLP_S3_N ? 1 : 0;
++        espi->u.espi.slp_s4_n = s02 & ESPI_SYS_EVT_2_SLP_S4_N ? 1 : 0;
++        espi->u.espi.slp_s5_n = s02 & ESPI_SYS_EVT_2_SLP_S5_N ? 1 : 0;
++        iowrite32(ESPI_INT_DN_VWIR_S02, espi->base + ESPI_INT_CLR);
+     }
+-    if(int_stt & ESPI_INT_DN_VWIR_S03)
+-    {
+-        u32 dn_vwir_sys0 = ioread32(espi->base+ESPI_DN_VWIR_SYS0);
+-        u8 s03 = dn_vwir_sys0>>24&0xf;
+-        if(s03&ESPI_SYS_EVT_3_OOB_RST_WARN)
+-        {
++    if (int_stt & ESPI_INT_DN_VWIR_S03) {
++        u32 dn_vwir_sys0 = ioread32(espi->base + ESPI_DN_VWIR_SYS0);
++        u8 s03 = dn_vwir_sys0 >> 24 & 0xf;
++        if (s03 & ESPI_SYS_EVT_3_OOB_RST_WARN) {
+             espi_send_oob_rst_ack(espi);
+         }
+-        espi->pltrst_n = s03&ESPI_SYS_EVT_3_PLTRST_N ? 1:0;
+-        espi->sus_stat_n = s03&ESPI_SYS_EVT_3_SUS_STAT_N ? 1:0;
+-        iowrite32(ESPI_INT_DN_VWIR_S03,espi->base+ESPI_INT_CLR);
++        espi->u.espi.pltrst_n = s03 & ESPI_SYS_EVT_3_PLTRST_N ? 1 : 0;
++        espi->u.espi.sus_stat_n = s03 & ESPI_SYS_EVT_3_SUS_STAT_N ? 1 : 0;
++        iowrite32(ESPI_INT_DN_VWIR_S03, espi->base + ESPI_INT_CLR);
+     }
+-    if(int_stt & ESPI_INT_DN_VWIR_S07)
+-    {
+-        u32 dn_vwir_sys1 = ioread32(espi->base+ESPI_DN_VWIR_SYS1);
+-        u8 s07 = dn_vwir_sys1>>24&0xf;
+-        if(s07&ESPI_SYS_EVT_7_HOST_RST_WARN)
+-        {
++    if (int_stt & ESPI_INT_DN_VWIR_S07) {
++        u32 dn_vwir_sys1 = ioread32(espi->base + ESPI_DN_VWIR_SYS1);
++        u8 s07 = dn_vwir_sys1 >> 24 & 0xf;
++        if (s07 & ESPI_SYS_EVT_7_HOST_RST_WARN) {
+             espi_send_host_rst_ack(espi);
+         }
+-        espi->nmiout_n = s07&ESPI_SYS_EVT_7_NMIOUT_N? 1:0;
+-        espi->smiout_n = s07&ESPI_SYS_EVT_7_SMIOUT_N? 1:0;
+-        iowrite32(ESPI_INT_DN_VWIR_S07,espi->base+ESPI_INT_CLR);
++        espi->u.espi.nmiout_n = s07 & ESPI_SYS_EVT_7_NMIOUT_N ? 1 : 0;
++        espi->u.espi.smiout_n = s07 & ESPI_SYS_EVT_7_SMIOUT_N ? 1 : 0;
++        iowrite32(ESPI_INT_DN_VWIR_S07, espi->base + ESPI_INT_CLR);
+     }
+-    if(int_stt & ESPI_INT_DN_RESET)
+-    {
+-        while(1);
++    if (int_stt & ESPI_INT_DN_RESET) {
++        while (1)
++            ;
+     }
+     return IRQ_HANDLED;
+-
+ }
+ 
+ static void espi_reg_init(void __iomem *base)
+ {
+-    iowrite32(0x0<<ESPI_IO_MODE_SUPP_SHIFT|0<<ESPI_OP_FREQ_SUPP_SHIFT|0xf<<ESPI_CH_SUPP_SHIFT,base+ESPI_GEN_CFG);
+-    iowrite32(0x1<<ESPI_PER_MAX_PLOAD_SUPP_SHIFT|ESPI_PER_CH_RDY,base+ESPI_CH0_CFG);
+-    iowrite32(0x1f<<ESPI_VWIR_MAX_CNT_SUPP_SHIFT|ESPI_VWIR_CH_RDY,base+ESPI_CH1_CFG);
+-    iowrite32(0x1<<ESPI_OOB_MAX_PLOAD_SUPP_SHIFT|ESPI_OOB_CH_RDY,base+ESPI_CH2_CFG);
+-    iowrite32(0x3<<ESPI_FLINGSI_SHARE_SUPP_SHIFT|0x1<<ESPI_FLINGSI_MAX_PLOAD_SUPP_SHIFT|ESPI_FLINGSI_CH_RDY,base+ESPI_CH3_CFG);
+-
+-    iowrite32(ESPI_ALERT_CLEAR|ESPI_SET_VWIRE_FREE|ESPI_SET_OOB_FREE
+-        |ESPI_SET_PERI_NP_FREE|ESPI_SET_PERI_PC_FREE
+-        |ESPI_SET_FLASH_C_FREE|ESPI_SET_FLASH_NP_FREE,base+ESPI_STATUS_SET);
+-    iowrite32(ESPI_NP_RX_BUF_OFFSET,base+ESPI_DN_NPST_ADR);
+-    iowrite32(ESPI_PC_RX_BUF_OFFSET,base+ESPI_DN_PSTC_ADR);
+-    iowrite32(ESPI_PC_TX_BUF_OFFSET,base+ESPI_UP_PSTC_ADR);
+-    iowrite32(ESPI_VW_TX_BUF_OFFSET,base+ESPI_UP_VWIR_ADR);
+-    iowrite32(ESPI_INT_DN_RESET|ESPI_INT_PSTC_FREE|ESPI_INT_NPST_FREE|ESPI_INT_DN_VWIR_S02|ESPI_INT_DN_VWIR_S03|ESPI_INT_DN_VWIR_S07,base+ESPI_INT_CLR);
+-    iowrite32(ESPI_INT_DN_RESET|ESPI_INT_PSTC_FREE|ESPI_INT_NPST_FREE|ESPI_INT_DN_VWIR_S02|ESPI_INT_DN_VWIR_S03|ESPI_INT_DN_VWIR_S07,base+ESPI_INT_MASK);
++    iowrite32(0x0 << ESPI_IO_MODE_SUPP_SHIFT | 0 << ESPI_OP_FREQ_SUPP_SHIFT | 0xf << ESPI_CH_SUPP_SHIFT, base + ESPI_GEN_CFG);
++    iowrite32(0x1 << ESPI_PER_MAX_PLOAD_SUPP_SHIFT | ESPI_PER_CH_RDY, base + ESPI_CH0_CFG);
++    iowrite32(0x1f << ESPI_VWIR_MAX_CNT_SUPP_SHIFT | ESPI_VWIR_CH_RDY, base + ESPI_CH1_CFG);
++    iowrite32(0x1 << ESPI_OOB_MAX_PLOAD_SUPP_SHIFT | ESPI_OOB_CH_RDY, base + ESPI_CH2_CFG);
++    iowrite32(0x3 << ESPI_FLINGSI_SHARE_SUPP_SHIFT | 0x1 << ESPI_FLINGSI_MAX_PLOAD_SUPP_SHIFT | ESPI_FLINGSI_CH_RDY, base + ESPI_CH3_CFG);
++
++    iowrite32(ESPI_ALERT_CLEAR | ESPI_SET_VWIRE_FREE | ESPI_SET_OOB_FREE
++                  | ESPI_SET_PERI_NP_FREE | ESPI_SET_PERI_PC_FREE
++                  | ESPI_SET_FLASH_C_FREE | ESPI_SET_FLASH_NP_FREE,
++              base + ESPI_STATUS_SET);
++    iowrite32(ESPI_NP_RX_BUF_OFFSET, base + ESPI_DN_NPST_ADR);
++    iowrite32(ESPI_PC_RX_BUF_OFFSET, base + ESPI_DN_PSTC_ADR);
++    iowrite32(ESPI_PC_TX_BUF_OFFSET, base + ESPI_UP_PSTC_ADR);
++    iowrite32(ESPI_VW_TX_BUF_OFFSET, base + ESPI_UP_VWIR_ADR);
++    iowrite32(ESPI_INT_DN_RESET | ESPI_INT_PSTC_FREE | ESPI_INT_NPST_FREE | ESPI_INT_DN_VWIR_S02 | ESPI_INT_DN_VWIR_S03 | ESPI_INT_DN_VWIR_S07, base + ESPI_INT_CLR);
++    iowrite32(ESPI_INT_DN_RESET | ESPI_INT_PSTC_FREE | ESPI_INT_NPST_FREE | ESPI_INT_DN_VWIR_S02 | ESPI_INT_DN_VWIR_S03 | ESPI_INT_DN_VWIR_S07, base + ESPI_INT_MASK);
+ }
+ 
+ static int lingsi_espi_probe(struct platform_device *pdev)
+@@ -446,17 +433,17 @@ static int lingsi_espi_probe(struct platform_device *pdev)
+     struct device *dev = &pdev->dev;
+     struct lingsi_espi_lpc_struct *priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+     struct resource *res;
+-    int irq,rc;
++    int irq, rc;
+     if (!priv)
+         return -ENOMEM;
+ 
+-    priv->slp_s3_n = 1;
+-    priv->slp_s4_n = 1;
+-    priv->slp_s5_n = 1;
+-    priv->pltrst_n = 1;
+-    priv->sus_stat_n = 1;
+-    priv->nmiout_n = 1;
+-    priv->smiout_n = 1;
++    priv->u.espi.slp_s3_n = 1;
++    priv->u.espi.slp_s4_n = 1;
++    priv->u.espi.slp_s5_n = 1;
++    priv->u.espi.pltrst_n = 1;
++    priv->u.espi.sus_stat_n = 1;
++    priv->u.espi.nmiout_n = 1;
++    priv->u.espi.smiout_n = 1;
+     priv->raise_edge_irq = espi_send_edge_int_evt;
+     priv->set_level_irq = espi_send_level_int_evt;
+ 
+@@ -471,13 +458,12 @@ static int lingsi_espi_probe(struct platform_device *pdev)
+         return PTR_ERR(priv->base);
+     }
+     irq = platform_get_irq(pdev, 0);
+-    if(irq<0) {
++    if (irq < 0) {
+         dev_err(dev, "cannot get irq\n");
+         return irq;
+     }
+-    rc = devm_request_irq(dev, irq, lingsi_espi_irq, IRQF_SHARED,
+-                dev_name(dev), priv);
+-    if(rc<0) {
++    rc = devm_request_irq(dev, irq, lingsi_espi_irq, IRQF_SHARED, dev_name(dev), priv);
++    if (rc < 0) {
+         dev_err(dev, "cannot request irq\n");
+         return rc;
+     }
+@@ -485,7 +471,7 @@ static int lingsi_espi_probe(struct platform_device *pdev)
+     INIT_LIST_HEAD(&priv->peri_io_list);
+     INIT_LIST_HEAD(&priv->peri_mem_list);
+ 
+-    spin_lock_init(&priv->vw_tx_lock);
++    spin_lock_init(&priv->u.espi.vw_tx_lock);
+     platform_set_drvdata(pdev, priv);
+ 
+     espi_reg_init(priv->base);
+@@ -496,23 +482,22 @@ static int lingsi_espi_probe(struct platform_device *pdev)
+ 
+ static int lingsi_espi_remove(struct platform_device *pdev)
+ {
+-
+     return 0;
+ }
+ 
+ static const struct of_device_id lingsi_espi_match[] = {
+     { .compatible = "lingsi,espi" },
+-    { }
++    {}
+ };
+ MODULE_DEVICE_TABLE(of, lingsi_espi_match);
+ 
+ static struct platform_driver lingsi_espi_driver = {
+     .driver = {
+-        .name        = DEVICE_NAME,
+-        .of_match_table    = lingsi_espi_match,
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_espi_match,
+     },
+-    .probe    = lingsi_espi_probe,
+-    .remove    = lingsi_espi_remove,
++    .probe = lingsi_espi_probe,
++    .remove = lingsi_espi_remove,
+ };
+ module_platform_driver(lingsi_espi_driver);
+ 
+diff --git a/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c b/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c
+index 5efc49e82bdb..259cb0e806ca 100644
+--- a/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c
++++ b/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c
+@@ -1,16 +1,12 @@
+-#include <linux/module.h>
+-#include <linux/init.h>
+-#include "lingsi_espi_lpc_common.h"
++#include <linux/module.h>#include <linux/init.h>#include "lingsi_espi_lpc_common.h"
+ 
+-void espi_lpc_add_ioport(struct lingsi_espi_lpc_struct *peri,struct lingsi_peri_ioport *ioport,
+-        void (*io_read)(struct lingsi_peri_ioport *,u8,void *),
+-        void (*io_write)(struct lingsi_peri_ioport *,u8,u8 *),u16 addr,void *ctx)
++void espi_lpc_add_ioport(struct lingsi_espi_lpc_struct *peri, struct lingsi_peri_ioport *ioport, void (*io_read)(struct lingsi_peri_ioport *, u8, void *), void (*io_write)(struct lingsi_peri_ioport *, u8, u8 *), u16 addr, void *ctx)
+ {
+     ioport->io_read = io_read;
+     ioport->io_write = io_write;
+     ioport->addr = addr;
+     ioport->ctx = ctx;
+-    list_add(&ioport->head,&peri->peri_io_list);
++    list_add(&ioport->head, &peri->peri_io_list);
+ }
+ EXPORT_SYMBOL(espi_lpc_add_ioport);
+ 
+@@ -20,14 +16,12 @@ void espi_lpc_remove_ioport(struct lingsi_peri_ioport *ioport)
+ }
+ EXPORT_SYMBOL(espi_lpc_remove_ioport);
+ 
+-void espi_lpc_add_mem(struct lingsi_espi_lpc_struct *peri,struct lingsi_peri_mem *mem,
+-    bool (*mem_read)(struct lingsi_peri_mem *,u32,u8,void *),bool (*mem_write)(struct lingsi_peri_mem *,u32,u8,u8 *),
+-    void *ctx)
++void espi_lpc_add_mem(struct lingsi_espi_lpc_struct *peri, struct lingsi_peri_mem *mem, bool (*mem_read)(struct lingsi_peri_mem *, u32, u8, void *), bool (*mem_write)(struct lingsi_peri_mem *, u32, u8, u8 *), void *ctx)
+ {
+     mem->mem_read = mem_read;
+     mem->mem_write = mem_write;
+     mem->ctx = ctx;
+-    list_add(&mem->head,&peri->peri_mem_list);
++    list_add(&mem->head, &peri->peri_mem_list);
+ }
+ EXPORT_SYMBOL(espi_lpc_add_mem);
+ 
+@@ -37,68 +31,74 @@ void espi_lpc_remove_mem(struct lingsi_peri_mem *mem)
+ }
+ EXPORT_SYMBOL(espi_lpc_remove_mem);
+ 
+-void espi_lpc_raise_edge_irq(struct lingsi_espi_lpc_struct *espi,u8 idx)
++void espi_lpc_raise_edge_irq(struct lingsi_espi_lpc_struct *espi, u8 idx)
+ {
+-    espi->raise_edge_irq(espi,idx);
++    espi->raise_edge_irq(espi, idx);
+ }
+ EXPORT_SYMBOL(espi_lpc_raise_edge_irq);
+ 
+-void espi_lpc_set_level_irq(struct lingsi_espi_lpc_struct *espi,u8 idx,u8 active)
++void espi_lpc_set_level_irq(struct lingsi_espi_lpc_struct *espi, u8 idx, u8 active)
+ {
+-    espi->set_level_irq(espi,idx,active);
++    espi->set_level_irq(espi, idx, active);
+ }
+ EXPORT_SYMBOL(espi_lpc_set_level_irq);
+ 
+-bool iord_short(struct lingsi_espi_lpc_struct *espi,u8 size,u16 addr,void *res)
++bool iord_short(struct lingsi_espi_lpc_struct *espi, u8 size, u16 addr, void *res)
+ {
+     struct list_head *ptr;
+-    list_for_each(ptr,&espi->peri_io_list){
+-        struct lingsi_peri_ioport *io = list_entry(ptr,struct lingsi_peri_ioport,head);
+-        if(addr == io->addr)
+-        {
+-            io->io_read(io,size,res);
++    list_for_each(ptr, &espi->peri_io_list)
++    {
++        struct lingsi_peri_ioport *io = list_entry(ptr, struct lingsi_peri_ioport, head);
++        if (addr == io->addr) {
++            io->io_read(io, size, res);
+             return true;
+         }
+     }
+     return false;
+ }
++EXPORT_SYMBOL(iord_short);
+ 
+-bool iowr_short(struct lingsi_espi_lpc_struct *espi,u8 size,u16 addr,u8 *data)
++bool iowr_short(struct lingsi_espi_lpc_struct *espi, u8 size, u16 addr, u8 *data)
+ {
+     struct list_head *ptr;
+-    list_for_each(ptr,&espi->peri_io_list){
+-        struct lingsi_peri_ioport *io = list_entry(ptr,struct lingsi_peri_ioport,head);
+-        if(addr == io->addr)
+-        {
+-            io->io_write(io,size,data);
++    list_for_each(ptr, &espi->peri_io_list)
++    {
++        struct lingsi_peri_ioport *io = list_entry(ptr, struct lingsi_peri_ioport, head);
++        if (addr == io->addr) {
++            io->io_write(io, size, data);
+             return true;
+         }
+     }
+     return false;
+ }
++EXPORT_SYMBOL(iowr_short);
+ 
+-bool memwr_short(struct lingsi_espi_lpc_struct *espi,u8 size,u32 addr,u8 *data)
++bool memwr_short(struct lingsi_espi_lpc_struct *espi, u8 size, u32 addr, u8 *data)
+ {
+     struct list_head *ptr;
+-    list_for_each(ptr,&espi->peri_mem_list){
+-        struct lingsi_peri_mem *mem = list_entry(ptr,struct lingsi_peri_mem,head);
+-        if(mem->mem_write(mem,addr,size,data))
+-        {
++    list_for_each(ptr, &espi->peri_mem_list)
++    {
++        struct lingsi_peri_mem *mem = list_entry(ptr, struct lingsi_peri_mem, head);
++        if (mem->mem_write(mem, addr, size, data)) {
+             return true;
+         }
+     }
+     return false;
+ }
++EXPORT_SYMBOL(memwr_short);
+ 
+-bool memrd_short(struct lingsi_espi_lpc_struct *espi,u8 size,u32 addr,void *res)
++bool memrd_short(struct lingsi_espi_lpc_struct *espi, u8 size, u32 addr, void *res)
+ {
+     struct list_head *ptr;
+-    list_for_each(ptr,&espi->peri_mem_list){
+-        struct lingsi_peri_mem *mem = list_entry(ptr,struct lingsi_peri_mem,head);
+-        if(mem->mem_read(mem,addr,size,res))
+-        {
++    list_for_each(ptr, &espi->peri_mem_list)
++    {
++        struct lingsi_peri_mem *mem = list_entry(ptr, struct lingsi_peri_mem, head);
++        if (mem->mem_read(mem, addr, size, res)) {
+             return true;
+         }
+     }
+     return false;
+ }
++EXPORT_SYMBOL(memrd_short);
++
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.h b/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.h
+index 3b11bf266907..d88135d6bf2b 100644
+--- a/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.h
++++ b/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.h
+@@ -3,66 +3,65 @@
+ #include <linux/list.h>
+ #include <linux/io.h>
+ #include <linux/atomic.h>
+-struct lingsi_peri_ioport
+-{
++struct lingsi_peri_ioport {
+     struct list_head head;
+-    void (*io_read)(struct lingsi_peri_ioport *ioport,u8 size,void *res);
+-    void (*io_write)(struct lingsi_peri_ioport *ioport,u8 size,u8 *data);
++    void (*io_read)(struct lingsi_peri_ioport *ioport, u8 size, void *res);
++    void (*io_write)(struct lingsi_peri_ioport *ioport, u8 size, u8 *data);
+     void *ctx;
+     u16 addr;
+ };
+ 
+-struct lingsi_peri_mem
+-{
++struct lingsi_peri_mem {
+     struct list_head head;
+-    bool (*mem_read)(struct lingsi_peri_mem *mem,u32 addr,u8 size,void *res);
+-    bool (*mem_write)(struct lingsi_peri_mem *mem,u32 addr,u8 size,u8 *data);
++    bool (*mem_read)(struct lingsi_peri_mem *mem, u32 addr, u8 size, void *res);
++    bool (*mem_write)(struct lingsi_peri_mem *mem, u32 addr, u8 size, u8 *data);
+     void *ctx;
+ };
+ 
+-struct lingsi_upstream_irq
+-{
++struct lingsi_upstream_irq {
+     u32 id;
+     u32 type;
+ };
+ 
+-struct lingsi_host_reg
+-{
++struct lingsi_host_reg {
+     u32 base;
+     u32 range;
+ };
+ 
+-struct lingsi_espi_lpc_struct
+-{
++struct lingsi_espi_lpc_struct {
+     void __iomem *base;
+     struct list_head peri_io_list;
+     struct list_head peri_mem_list;
+-    void (*raise_edge_irq)(struct lingsi_espi_lpc_struct *,u8);
+-    void (*set_level_irq)(struct lingsi_espi_lpc_struct *,u8,u8);
+-    spinlock_t vw_tx_lock;
+-    u8 slp_s3_n:1,
+-        slp_s4_n:1,
+-        slp_s5_n:1,
+-        pltrst_n:1,
+-        sus_stat_n:1,
+-        nmiout_n:1,
+-        smiout_n:1;
+-
++    void (*raise_edge_irq)(struct lingsi_espi_lpc_struct *, u8);
++    void (*set_level_irq)(struct lingsi_espi_lpc_struct *, u8, u8);
++    union {
++        struct {
++            spinlock_t vw_tx_lock;
++            u8 slp_s3_n : 1,
++                slp_s4_n : 1,
++                slp_s5_n : 1,
++                pltrst_n : 1,
++                sus_stat_n : 1,
++                nmiout_n : 1,
++                smiout_n : 1;
++        } espi;
++        struct {
++            spinlock_t serirq_src_lock;
++            spinlock_t int_msk_lock;
++            u32 serirq_edge_mask;
++        } lpc;
++    } u;
+ };
+ 
+-bool iord_short(struct lingsi_espi_lpc_struct *espi,u8 size,u16 addr,void *res);
+-bool iowr_short(struct lingsi_espi_lpc_struct *espi,u8 size,u16 addr,u8 *data);
+-bool memwr_short(struct lingsi_espi_lpc_struct *espi,u8 size,u32 addr,u8 *data);
+-bool memrd_short(struct lingsi_espi_lpc_struct *espi,u8 size,u32 addr,void *res);
+-void espi_lpc_raise_edge_irq(struct lingsi_espi_lpc_struct *espi,u8 idx);
+-void espi_lpc_set_level_irq(struct lingsi_espi_lpc_struct *espi,u8 idx,u8 active);
+-void espi_lpc_add_ioport(struct lingsi_espi_lpc_struct *peri,struct lingsi_peri_ioport *ioport,
+-        void (*io_read)(struct lingsi_peri_ioport *,u8,void *),
+-        void (*io_write)(struct lingsi_peri_ioport *,u8,u8 *),u16 addr,void *ctx);
++bool iord_short(struct lingsi_espi_lpc_struct *espi, u8 size, u16 addr, void *res);
++bool iowr_short(struct lingsi_espi_lpc_struct *espi, u8 size, u16 addr, u8 *data);
++bool memwr_short(struct lingsi_espi_lpc_struct *espi, u8 size, u32 addr, u8 *data);
++bool memrd_short(struct lingsi_espi_lpc_struct *espi, u8 size, u32 addr, void *res);
++void espi_lpc_raise_edge_irq(struct lingsi_espi_lpc_struct *espi, u8 idx);
++void espi_lpc_set_level_irq(struct lingsi_espi_lpc_struct *espi, u8 idx, u8 active);
++void espi_lpc_add_ioport(struct lingsi_espi_lpc_struct *peri, struct lingsi_peri_ioport *ioport, void (*io_read)(struct lingsi_peri_ioport *, u8, void *), void (*io_write)(struct lingsi_peri_ioport *, u8, u8 *), u16 addr, void *ctx);
+ void espi_lpc_remove_ioport(struct lingsi_peri_ioport *ioport);
+-void espi_lpc_add_mem(struct lingsi_espi_lpc_struct *peri,struct lingsi_peri_mem *mem,
+-    bool (*mem_read)(struct lingsi_peri_mem *,u32,u8,void *),bool (*mem_write)(struct lingsi_peri_mem *,u32,u8,u8 *),
+-    void *ctx);
++void espi_lpc_add_mem(struct lingsi_espi_lpc_struct *peri, struct lingsi_peri_mem *mem, bool (*mem_read)(struct lingsi_peri_mem *, u32, u8, void *), bool (*mem_write)(struct lingsi_peri_mem *, u32, u8, u8 *), void *ctx);
+ void espi_lpc_remove_mem(struct lingsi_peri_mem *mem);
+ 
+-#endif
++#endif
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_host_dev.c b/drivers/char/ipmi/lingsi/lingsi_host_dev.c
+index 5ea949ca9e01..3a568b62a27b 100644
+--- a/drivers/char/ipmi/lingsi/lingsi_host_dev.c
++++ b/drivers/char/ipmi/lingsi/lingsi_host_dev.c
+@@ -11,74 +11,64 @@
+ #include <linux/of_platform.h>
+ #include <linux/workqueue.h>
+ #include "lingsi_espi_lpc_common.h"
+-#define DEVICE_NAME    "lingsi-host-dev"
++#define DEVICE_NAME "lingsi-host-dev"
+ 
+-struct lingsi_host_dev
+-{
++struct lingsi_host_dev {
+     struct lingsi_espi_lpc_struct *parent;
+     void __iomem *base;
+-    struct work_struct irq_work;
+     struct lingsi_upstream_irq up_irq;
+     struct lingsi_host_reg host_reg;
+     int local_irq;
+-    bool irq_need_report;
+     struct lingsi_peri_ioport ioport[];
+ };
+ 
+-static void host_dev_up_irq_handle(struct work_struct *work)
++static irqreturn_t lingsi_host_dev_irq(int irq, void *arg)
+ {
+-    struct lingsi_host_dev *priv = container_of(work,struct lingsi_host_dev,irq_work);
+-    bool pending,ret;
+-    if(priv->irq_need_report)
+-    {
+-        priv->irq_need_report = false;
+-        if(priv->up_irq.type & IRQ_TYPE_LEVEL_MASK)
+-        {
+-            espi_lpc_set_level_irq(priv->parent,priv->up_irq.id,1);
+-        }else
+-        {
+-            espi_lpc_raise_edge_irq(priv->parent,priv->up_irq.id);
+-        }
++    struct lingsi_host_dev *priv = arg;
++    disable_irq_nosync(irq);
++    if (priv->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++        espi_lpc_set_level_irq(priv->parent, priv->up_irq.id, 1);
++    } else {
++        espi_lpc_raise_edge_irq(priv->parent, priv->up_irq.id);
++    }
++    return IRQ_HANDLED;
++}
++
++static void irq_state_update(struct lingsi_host_dev *priv)
++{
++    bool masked, pending;
++    int ret = irq_get_irqchip_state(priv->local_irq, IRQCHIP_STATE_MASKED, &masked);
++    BUG_ON(ret);
++    if (!masked) {
++        return;
+     }
+-    ret = irq_get_irqchip_state(priv->local_irq,IRQCHIP_STATE_PENDING,&pending);
++    ret = irq_set_irqchip_state(priv->local_irq, IRQCHIP_STATE_PENDING, false);
++    BUG_ON(ret);
++    ret = irq_get_irqchip_state(priv->local_irq, IRQCHIP_STATE_PENDING, &pending);
+     BUG_ON(ret);
+-    if(pending)
+-    {
+-        ret = irq_set_irqchip_state(priv->local_irq,IRQCHIP_STATE_PENDING,false);
+-        BUG_ON(ret);
+-        schedule_work(&priv->irq_work);
+-    }else
+-    {
+-        if(priv->up_irq.type & IRQ_TYPE_LEVEL_MASK)
+-        {
+-            espi_lpc_set_level_irq(priv->parent,priv->up_irq.id,0);
++    if (!pending) {
++        if (priv->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++            espi_lpc_set_level_irq(priv->parent, priv->up_irq.id, 0);
+         }
+         enable_irq(priv->local_irq);
+     }
+ }
+ 
+-static irqreturn_t lingsi_host_dev_irq(int irq, void *arg)
+-{
+-    struct lingsi_host_dev *priv = arg;
+-    disable_irq_nosync(irq);
+-    priv->irq_need_report = true;
+-    schedule_work(&priv->irq_work);
+-    return IRQ_HANDLED;
+-}
+-
+-static void host_reg_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
++static void host_reg_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
+ {
+     struct lingsi_host_dev *priv = ioport->ctx;
+     u8 *val = res;
+     u8 offset = ioport->addr - priv->host_reg.base;
+-    *val = ioread32(priv->base + sizeof(int)*offset);
++    *val = ioread32(priv->base + sizeof(int) * offset);
++    irq_state_update(priv);
+ }
+ 
+-static void host_reg_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
++static void host_reg_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
+ {
+     struct lingsi_host_dev *priv = ioport->ctx;
+     u8 offset = ioport->addr - priv->host_reg.base;
+-    iowrite32(*data,priv->base + sizeof(int)*offset);
++    iowrite32(*data, priv->base + sizeof(int) * offset);
++    irq_state_update(priv);
+ }
+ 
+ static int lingsi_host_dev_probe(struct platform_device *pdev)
+@@ -90,43 +80,38 @@ static int lingsi_host_dev_probe(struct platform_device *pdev)
+     struct device_node *parent = of_get_parent(dev->of_node);
+     struct resource *res;
+     struct lingsi_host_reg host_reg;
+-    int rc,i;
+-    if(!parent)
+-    {
++    int rc, i;
++    if (!parent) {
+         dev_err(dev, "cannot get parent node\n");
+         return -ENODEV;
+     }
+     parent_pdev = of_find_device_by_node(parent);
+-    if(!parent_pdev)
+-    {
++    if (!parent_pdev) {
+         dev_err(dev, "cannot get parent device\n");
+         return -ENODEV;
+     }
+     espi_lpc = platform_get_drvdata(parent_pdev);
+-    if(!espi_lpc)
+-    {
++    if (!espi_lpc) {
+         dev_err(dev, "espi lpc not inited\n");
+         return -EPROBE_DEFER;
+     }
+ 
+     rc = of_property_read_u32_array(pdev->dev.of_node, "host_reg", (u32 *)&host_reg, 2);
+-    if(rc<0)
+-    {
++    if (rc < 0) {
+         dev_err(dev, "no valid 'host_reg' configured\n");
+         return rc;
+     }
+ 
+     priv = devm_kzalloc(&pdev->dev, sizeof(*priv) + host_reg.range * sizeof(*priv->ioport), GFP_KERNEL);
+-    if (!priv){
+-           dev_err(dev, "cannot alloc lingsi_host_dev mem\n");
++    if (!priv) {
++        dev_err(dev, "cannot alloc lingsi_host_dev mem\n");
+         return -ENOMEM;
+     }
+     priv->parent = espi_lpc;
+     priv->host_reg = host_reg;
+ 
+     rc = of_property_read_u32_array(pdev->dev.of_node, "upstream_irq", (u32 *)&priv->up_irq, 2);
+-    if(rc<0)
+-    {
++    if (rc < 0) {
+         dev_err(dev, "no valid 'upstream_irq' configured\n");
+         return rc;
+     }
+@@ -142,23 +127,21 @@ static int lingsi_host_dev_probe(struct platform_device *pdev)
+         return PTR_ERR(priv->base);
+     }
+     priv->local_irq = platform_get_irq(pdev, 0);
+-    if(priv->local_irq<0) {
++    if (priv->local_irq < 0) {
+         dev_err(dev, "cannot get irq\n");
+         return priv->local_irq;
+     }
+ 
+-    for(i=0;i<priv->host_reg.range;++i)
+-    {
+-        espi_lpc_add_ioport(espi_lpc,&priv->ioport[i],host_reg_read,
+-            host_reg_write,priv->host_reg.base + i,priv);
++    for (i = 0; i < priv->host_reg.range; ++i) {
++        espi_lpc_add_ioport(espi_lpc, &priv->ioport[i], host_reg_read, host_reg_write, priv->host_reg.base + i, priv);
+     }
+ 
+-    rc = devm_request_irq(dev, priv->local_irq, lingsi_host_dev_irq, IRQF_SHARED,dev_name(dev), priv);
+-    if(rc<0) {
++    rc = devm_request_irq(dev, priv->local_irq, lingsi_host_dev_irq, IRQF_SHARED, dev_name(dev), priv);
++    if (rc < 0) {
+         dev_err(dev, "cannot request irq\n");
+         return rc;
+     }
+-    INIT_WORK(&priv->irq_work,host_dev_up_irq_handle);
++
+     platform_set_drvdata(pdev, priv);
+ 
+     return 0;
+@@ -168,8 +151,7 @@ static int lingsi_host_dev_remove(struct platform_device *pdev)
+ {
+     int i;
+     struct lingsi_host_dev *priv = platform_get_drvdata(pdev);
+-    for(i=0;i<priv->host_reg.range;++i)
+-    {
++    for (i = 0; i < priv->host_reg.range; ++i) {
+         espi_lpc_remove_ioport(&priv->ioport[i]);
+     }
+     return 0;
+@@ -177,18 +159,18 @@ static int lingsi_host_dev_remove(struct platform_device *pdev)
+ 
+ static const struct of_device_id lingsi_host_dev_match[] = {
+     { .compatible = "lingsi,host-dev" },
+-    { }
++    {}
+ };
+ MODULE_DEVICE_TABLE(of, lingsi_host_dev_match);
+ 
+ static struct platform_driver lingsi_host_dev_driver = {
+     .driver = {
+-        .name        = DEVICE_NAME,
+-        .of_match_table    = lingsi_host_dev_match,
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_host_dev_match,
+     },
+-    .probe    = lingsi_host_dev_probe,
+-    .remove    = lingsi_host_dev_remove,
++    .probe = lingsi_host_dev_probe,
++    .remove = lingsi_host_dev_remove,
+ };
+ module_platform_driver(lingsi_host_dev_driver);
+ 
+-MODULE_LICENSE("GPL");
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_host_vuart.c b/drivers/char/ipmi/lingsi/lingsi_host_vuart.c
+new file mode 100644
+index 000000000000..3ba390eb7883
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_host_vuart.c
+@@ -0,0 +1,294 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/of.h>
++#include <linux/io.h>
++#include <linux/platform_device.h>
++#include <linux/atomic.h>
++#include <linux/of_platform.h>
++#include <linux/serial.h>
++#include <linux/serial_core.h>
++#include "lingsi_espi_lpc_common.h"
++#include "lingsi_vuart.h"
++#define DEVICE_NAME "lingsi-host-vuart"
++struct host_vuart_reg {
++    uint8_t dll;
++    uint8_t dlh;
++    uint8_t ier;
++    uint8_t fcr;
++    uint8_t lcr;
++    uint8_t mcr;
++    uint8_t scr;
++};
++
++struct lingsi_host_vuart {
++    struct lingsi_espi_lpc_struct *parent;
++    struct lingsi_vuart uartp;
++    struct lingsi_upstream_irq up_irq;
++    struct lingsi_host_reg host_reg;
++    struct lingsi_peri_ioport ioport[8];
++    struct host_vuart_reg vuart_reg;
++    bool level_up_irq_active;
++    bool local_enabled;
++};
++
++static bool host_vuart_rx_available(struct lingsi_host_vuart *priv)
++{
++    return !lingsi_vuart_local_tx_empty(&priv->uartp);
++}
++
++static u8 host_vuart_reg_get_iir(struct lingsi_host_vuart *priv)
++{
++    bool tx_empty = true;
++    u8 iir;
++    iir = priv->vuart_reg.fcr & 0x1 ? 0xc0 : 0;
++    if ((priv->vuart_reg.ier & 0x1) && host_vuart_reg_get_iir(priv)) {
++        iir |= 0x4;
++    } else if ((priv->vuart_reg.ier & 0x2) & tx_empty) {
++        iir |= 0x2;
++    } else {
++        iir |= 0x1;
++    }
++    return iir;
++}
++
++static void host_vuart_report_inactive_level_up_irq(struct lingsi_host_vuart *priv)
++{
++    if ((host_vuart_reg_get_iir(priv) & 0xf) == 0x1) {
++        if (priv->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++            if (priv->level_up_irq_active) {
++                espi_lpc_set_level_irq(priv->parent, priv->up_irq.id, 0);
++                priv->level_up_irq_active = false;
++            }
++        }
++    }
++}
++
++static void host_vuart_report_active_edge_level_up_irq(struct lingsi_host_vuart *priv)
++{
++    if ((host_vuart_reg_get_iir(priv) & 0xf) == 0x1) {
++        return;
++    }
++    if (priv->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++        if (!priv->level_up_irq_active) {
++            espi_lpc_set_level_irq(priv->parent, priv->up_irq.id, 1);
++            priv->level_up_irq_active = true;
++        }
++    } else {
++        espi_lpc_raise_edge_irq(priv->parent, priv->up_irq.id);
++    }
++}
++
++static void host_vuart_reg0_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    if (priv->vuart_reg.lcr & 0x80) {
++        *val = priv->vuart_reg.dll;
++    } else if (host_vuart_reg_get_iir(priv)) {
++        *val = lingsi_vuart_get_tx_char(&priv->uartp);
++        host_vuart_report_inactive_level_up_irq(priv);
++    }
++}
++
++static void host_vuart_reg0_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    if (priv->vuart_reg.lcr & 0x80) {
++        priv->vuart_reg.dll = *data;
++    } else {
++        lingsi_vuart_char_rx_handle(&priv->uartp, *data);
++        //vuart_report_inactive_level_up_irq(priv);
++    }
++}
++
++static void host_vuart_reg1_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    if (priv->vuart_reg.lcr & 0x80) {
++        *val = priv->vuart_reg.dlh;
++    } else {
++        *val = priv->vuart_reg.ier;
++    }
++}
++
++static void host_vuart_reg1_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    if (priv->vuart_reg.lcr & 0x80) {
++        priv->vuart_reg.dlh = *data;
++    } else {
++        priv->vuart_reg.ier = *data;
++        host_vuart_report_active_edge_level_up_irq(priv);
++    }
++}
++
++static void host_vuart_reg2_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    *val = host_vuart_reg_get_iir(priv);
++}
++
++static void host_vuart_reg2_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    priv->vuart_reg.fcr = *data;
++}
++
++static void host_vuart_reg3_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    *val = priv->vuart_reg.lcr;
++}
++
++static void host_vuart_reg3_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    priv->vuart_reg.lcr = *data;
++}
++
++static void host_vuart_reg4_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    *val = priv->vuart_reg.mcr;
++}
++
++static void host_vuart_reg4_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    priv->vuart_reg.mcr = *data;
++}
++
++static void host_vuart_reg5_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    *val = 0x60;
++    if (host_vuart_rx_available(priv)) {
++        *val |= 0x1;
++    }
++}
++
++static void host_vuart_reg5_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    BUG_ON(1);
++}
++
++static void host_vuart_reg6_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    u8 *val = res;
++    *val = 0;
++}
++
++static void host_vuart_reg6_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    BUG_ON(1);
++}
++
++static void host_vuart_reg7_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    u8 *val = res;
++    *val = priv->vuart_reg.scr;
++}
++
++static void host_vuart_reg7_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
++{
++    struct lingsi_host_vuart *priv = ioport->ctx;
++    priv->vuart_reg.scr = *data;
++}
++
++static int lingsi_host_vuart_probe(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    struct platform_device *parent_pdev;
++    struct lingsi_espi_lpc_struct *espi_lpc;
++    struct lingsi_host_vuart *priv;
++    struct device_node *parent = of_get_parent(dev->of_node);
++    int rc;
++    if (!parent) {
++        dev_err(dev, "cannot get parent node\n");
++        return -ENODEV;
++    }
++    parent_pdev = of_find_device_by_node(parent);
++    if (!parent_pdev) {
++        dev_err(dev, "cannot get parent device\n");
++        return -ENODEV;
++    }
++    espi_lpc = platform_get_drvdata(parent_pdev);
++    if (!espi_lpc) {
++        dev_err(dev, "espi lpc not inited\n");
++        return -EPROBE_DEFER;
++    }
++    priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
++    if (!priv) {
++        dev_err(dev, "cannot alloc lingsi_host_dev mem\n");
++        return -ENOMEM;
++    }
++    priv->parent = espi_lpc;
++
++    rc = of_property_read_u32_array(pdev->dev.of_node, "host_reg", (u32 *)&priv->host_reg, 2);
++    if (rc < 0) {
++        dev_err(dev, "no valid 'host_reg' configured\n");
++        return rc;
++    }
++    rc = of_property_read_u32_array(pdev->dev.of_node, "upstream_irq", (u32 *)&priv->up_irq, 2);
++    if (rc < 0) {
++        dev_err(dev, "no valid 'upstream_irq' configured\n");
++        return rc;
++    }
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[0], host_vuart_reg0_read, host_vuart_reg0_write, priv->host_reg.base, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[1], host_vuart_reg1_read, host_vuart_reg1_write, priv->host_reg.base + 1, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[2], host_vuart_reg2_read, host_vuart_reg2_write, priv->host_reg.base + 2, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[3], host_vuart_reg3_read, host_vuart_reg3_write, priv->host_reg.base + 3, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[4], host_vuart_reg4_read, host_vuart_reg4_write, priv->host_reg.base + 4, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[5], host_vuart_reg5_read, host_vuart_reg5_write, priv->host_reg.base + 5, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[6], host_vuart_reg6_read, host_vuart_reg6_write, priv->host_reg.base + 6, priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->ioport[7], host_vuart_reg7_read, host_vuart_reg7_write, priv->host_reg.base + 7, priv);
++
++    pdev->id = of_alias_get_id(pdev->dev.of_node, "vuart");
++    if (pdev->id < 0) {
++        dev_err(&pdev->dev, "id %d out of range\n", pdev->id);
++        return -EINVAL;
++    }
++    rc = lingsi_vuart_port_add(&priv->uartp, dev, pdev->id);
++    if (rc) {
++        dev_err(dev, "lingsi_vuart_port_init() failed; err=%i\n", rc);
++        return rc;
++    }
++    platform_set_drvdata(pdev, priv);
++    return 0;
++}
++
++static int lingsi_host_vuart_remove(struct platform_device *pdev)
++{
++    int i;
++    struct lingsi_host_vuart *priv = platform_get_drvdata(pdev);
++    lingsi_vuart_port_remove(&priv->uartp);
++    for (i = 0; i < 8; ++i) {
++        espi_lpc_remove_ioport(&priv->ioport[i]);
++    }
++    return 0;
++}
++
++static const struct of_device_id lingsi_host_vuart_match[] = {
++    { .compatible = "lingsi,host-vuart" },
++    {}
++};
++MODULE_DEVICE_TABLE(of, lingsi_host_vuart_match);
++
++static struct platform_driver lingsi_host_vuart_driver = {
++    .driver = {
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_host_vuart_match,
++    },
++    .probe = lingsi_host_vuart_probe,
++    .remove = lingsi_host_vuart_remove,
++};
++module_platform_driver(lingsi_host_vuart_driver);
++
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_kcs.c b/drivers/char/ipmi/lingsi/lingsi_kcs.c
+index e9ee02a55e22..b5074dd55fe5 100644
+--- a/drivers/char/ipmi/lingsi/lingsi_kcs.c
++++ b/drivers/char/ipmi/lingsi/lingsi_kcs.c
+@@ -11,7 +11,7 @@
+ #include <linux/of_platform.h>
+ #include "../kcs_bmc_device.h"
+ #include "lingsi_espi_lpc_common.h"
+-#define DEVICE_NAME    "lingsi-kcs-bmc"
++#define DEVICE_NAME "lingsi-kcs-bmc"
+ 
+ #define IDR 0x10
+ #define ODR 0x14
+@@ -44,60 +44,54 @@ static u8 lingsi_kcs_inb(struct kcs_bmc_device *kcs_bmc, u32 reg)
+     struct lingsi_kcs_bmc *lingsi_kcs = to_lingsi_kcs_bmc(kcs_bmc);
+     unsigned long flags;
+     u8 ret = 0;
+-    if(reg == IDR)
+-    {
+-        spin_lock_irqsave(&lingsi_kcs->reg.lock,flags);
++    if (reg == IDR) {
++        spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
+         lingsi_kcs->reg.status &= ~KCS_BMC_STR_IBF;
+         ret = lingsi_kcs->reg.data_in;
+-        spin_unlock_irqrestore(&lingsi_kcs->reg.lock,flags);
+-    }else if(reg == STR)
+-    {
++        spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
++    } else if (reg == STR) {
+         ret = lingsi_kcs->reg.status;
+-    }else{
++    } else {
+         dev_err(kcs_bmc->dev, "lingsi_kcs_inb error\n");
+-        while(1);
++        while (1)
++            ;
+     }
+     return ret;
+-
+ }
+ 
+ static void lingsi_kcs_outb(struct kcs_bmc_device *kcs_bmc, u32 reg, u8 data)
+ {
+     struct lingsi_kcs_bmc *lingsi_kcs = to_lingsi_kcs_bmc(kcs_bmc);
+     unsigned long flags;
+-    if(reg == ODR)
+-    {
+-        spin_lock_irqsave(&lingsi_kcs->reg.lock,flags);
++    if (reg == ODR) {
++        spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
+         lingsi_kcs->reg.status |= KCS_BMC_STR_OBF;
+         lingsi_kcs->reg.data_out = data;
+-        spin_unlock_irqrestore(&lingsi_kcs->reg.lock,flags);
+-        if(lingsi_kcs->up_irq.type & IRQ_TYPE_EDGE_BOTH)
+-        {
+-            espi_lpc_raise_edge_irq(lingsi_kcs->parent,lingsi_kcs->up_irq.id);
+-        }else if(lingsi_kcs->up_irq.type & IRQ_TYPE_LEVEL_MASK)
+-        {
+-            espi_lpc_set_level_irq(lingsi_kcs->parent,lingsi_kcs->up_irq.id,1);
++        spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
++        if (lingsi_kcs->up_irq.type & IRQ_TYPE_EDGE_BOTH) {
++            espi_lpc_raise_edge_irq(lingsi_kcs->parent, lingsi_kcs->up_irq.id);
++        } else if (lingsi_kcs->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++            espi_lpc_set_level_irq(lingsi_kcs->parent, lingsi_kcs->up_irq.id, 1);
+         }
+-    }else
+-    {
++    } else {
+         dev_err(kcs_bmc->dev, "lingsi_kcs_outb error\n");
+-        while(1);
++        while (1)
++            ;
+     }
+-
+ }
+ 
+ static void lingsi_kcs_updateb(struct kcs_bmc_device *kcs_bmc, u32 reg, u8 mask, u8 data)
+ {
+     struct lingsi_kcs_bmc *lingsi_kcs = to_lingsi_kcs_bmc(kcs_bmc);
+     unsigned long flags;
+-    if(reg == STR)
+-    {
+-        spin_lock_irqsave(&lingsi_kcs->reg.lock,flags);
++    if (reg == STR) {
++        spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
+         lingsi_kcs->reg.status = (lingsi_kcs->reg.status & ~mask) | data;
+-        spin_unlock_irqrestore(&lingsi_kcs->reg.lock,flags);
+-    }else{
++        spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
++    } else {
+         dev_err(kcs_bmc->dev, "lingsi_kcs_updateb error\n");
+-        while(1);
++        while (1)
++            ;
+     }
+ }
+ 
+@@ -144,68 +138,62 @@ static int lingsi_kcs_of_get_io_address(struct platform_device *pdev, u32 addrs[
+     return 2;
+ }
+ 
+-static void data_cmd_stt_iowr(struct lingsi_kcs_bmc *lingsi_kcs,u8 size,u8 *data,bool is_data)
++static void data_cmd_stt_iowr(struct lingsi_kcs_bmc *lingsi_kcs, u8 size, u8 *data, bool is_data)
+ {
+     unsigned long flags;
+-    spin_lock_irqsave(&lingsi_kcs->reg.lock,flags);
++    spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
+     lingsi_kcs->reg.data_in = data[0];
+     lingsi_kcs->reg.status |= KCS_BMC_STR_IBF;
+-    if(is_data)
+-    {
++    if (is_data) {
+         lingsi_kcs->reg.status &= ~KCS_BMC_STR_CMD_DAT;
+-    }else
+-    {
++    } else {
+         lingsi_kcs->reg.status |= KCS_BMC_STR_CMD_DAT;
+     }
+-    spin_unlock_irqrestore(&lingsi_kcs->reg.lock,flags);
+-    if(lingsi_kcs->event_mask&KCS_BMC_EVENT_TYPE_IBF)
+-    {
++    spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
++    if (lingsi_kcs->event_mask & KCS_BMC_EVENT_TYPE_IBF) {
+         kcs_bmc_handle_event(&lingsi_kcs->kcs_bmc);
+     }
+ }
+ 
+-static void data_io_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
++static void data_io_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
+ {
+-    u8 *val=res;
++    u8 *val = res;
+     struct lingsi_kcs_bmc *lingsi_kcs = ioport->ctx;
+     unsigned long flags;
+-    spin_lock_irqsave(&lingsi_kcs->reg.lock,flags);
++    spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
+     *val = lingsi_kcs->reg.data_out;
+     lingsi_kcs->reg.status &= ~KCS_BMC_STR_OBF;
+-    spin_unlock_irqrestore(&lingsi_kcs->reg.lock,flags);
+-    if(lingsi_kcs->up_irq.type & IRQ_TYPE_LEVEL_MASK)
+-    {
+-        espi_lpc_set_level_irq(lingsi_kcs->parent,lingsi_kcs->up_irq.id,0);
++    spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
++    if (lingsi_kcs->up_irq.type & IRQ_TYPE_LEVEL_MASK) {
++        espi_lpc_set_level_irq(lingsi_kcs->parent, lingsi_kcs->up_irq.id, 0);
+     }
+-    if(lingsi_kcs->event_mask&KCS_BMC_EVENT_TYPE_OBE)
+-    {
++    if (lingsi_kcs->event_mask & KCS_BMC_EVENT_TYPE_OBE) {
+         kcs_bmc_handle_event(&lingsi_kcs->kcs_bmc);
+     }
+ }
+ 
+-static void data_io_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
++static void data_io_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
+ {
+     struct lingsi_kcs_bmc *lingsi_kcs = ioport->ctx;
+-    data_cmd_stt_iowr(lingsi_kcs,size,data,true);
++    data_cmd_stt_iowr(lingsi_kcs, size, data, true);
+ }
+ 
+-static void cmd_stt_io_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
++static void cmd_stt_io_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
+ {
+     struct lingsi_kcs_bmc *lingsi_kcs = ioport->ctx;
+     unsigned long flags;
+     u8 *val = res;
+-    spin_lock_irqsave(&lingsi_kcs->reg.lock,flags);
++    spin_lock_irqsave(&lingsi_kcs->reg.lock, flags);
+     *val = lingsi_kcs->reg.status;
+-    spin_unlock_irqrestore(&lingsi_kcs->reg.lock,flags);
++    spin_unlock_irqrestore(&lingsi_kcs->reg.lock, flags);
+ }
+ 
+-static void cmd_stt_io_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
++static void cmd_stt_io_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
+ {
+     struct lingsi_kcs_bmc *lingsi_kcs = ioport->ctx;
+-    data_cmd_stt_iowr(lingsi_kcs,size,data,false);
++    data_cmd_stt_iowr(lingsi_kcs, size, data, false);
+ }
+ 
+-
+ static int lingsi_kcs_probe(struct platform_device *pdev)
+ {
+     struct device *dev = &pdev->dev;
+@@ -213,25 +201,22 @@ static int lingsi_kcs_probe(struct platform_device *pdev)
+     struct kcs_bmc_device *kcs_bmc;
+     struct platform_device *parent_pdev;
+     struct lingsi_espi_lpc_struct *espi_lpc;
+-    u32 addrs[2],chan;
++    u32 addrs[2], chan;
+     int nr_addrs;
+     int rc;
+ 
+     struct device_node *parent = of_get_parent(dev->of_node);
+-    if(!parent)
+-    {
++    if (!parent) {
+         dev_err(dev, "cannot get parent node\n");
+         return -ENODEV;
+     }
+     parent_pdev = of_find_device_by_node(parent);
+-    if(!parent_pdev)
+-    {
++    if (!parent_pdev) {
+         dev_err(dev, "cannot get parent device\n");
+         return -ENODEV;
+     }
+     espi_lpc = platform_get_drvdata(parent_pdev);
+-    if(!espi_lpc)
+-    {
++    if (!espi_lpc) {
+         dev_err(dev, "espi lpc not inited\n");
+         return -EPROBE_DEFER;
+     }
+@@ -242,22 +227,21 @@ static int lingsi_kcs_probe(struct platform_device *pdev)
+     priv->parent = espi_lpc;
+ 
+     chan = lingsi_kcs_of_get_channel(pdev);
+-    if(chan < 0)
++    if (chan < 0)
+         return chan;
+ 
+-    nr_addrs = lingsi_kcs_of_get_io_address(pdev,addrs);
+-    if(nr_addrs < 0 )
++    nr_addrs = lingsi_kcs_of_get_io_address(pdev, addrs);
++    if (nr_addrs < 0)
+         return nr_addrs;
+ 
+     rc = of_property_read_u32_array(pdev->dev.of_node, "kcs_upstream_irq", (u32 *)&priv->up_irq, 2);
+-    if(rc)
+-    {
++    if (rc) {
+         priv->up_irq.type = IRQ_TYPE_NONE;
+     }
+ 
+-    espi_lpc_add_ioport(espi_lpc,&priv->io_data,data_io_read,data_io_write,addrs[0],priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->io_data, data_io_read, data_io_write, addrs[0], priv);
+ 
+-    espi_lpc_add_ioport(espi_lpc,&priv->io_cmd_stt,cmd_stt_io_read,cmd_stt_io_write,addrs[1],priv);
++    espi_lpc_add_ioport(espi_lpc, &priv->io_cmd_stt, cmd_stt_io_read, cmd_stt_io_write, addrs[1], priv);
+ 
+     spin_lock_init(&priv->reg.lock);
+ 
+@@ -271,6 +255,9 @@ static int lingsi_kcs_probe(struct platform_device *pdev)
+ 
+     platform_set_drvdata(pdev, priv);
+ 
++    // npcm7xx_kcs_irq_mask_update(kcs_bmc, (KCS_BMC_EVENT_TYPE_IBF | KCS_BMC_EVENT_TYPE_OBE), 0);
++    // npcm7xx_kcs_enable_channel(kcs_bmc, true);
++
+     rc = kcs_bmc_add_device(kcs_bmc);
+     if (rc) {
+         dev_warn(&pdev->dev, "Failed to register channel %d: %d\n", kcs_bmc->channel, rc);
+@@ -278,8 +265,8 @@ static int lingsi_kcs_probe(struct platform_device *pdev)
+     }
+ 
+     // pr_info("channel=%u idr=0x%x odr=0x%x str=0x%x\n",
+-    //     chan,
+-    //     kcs_bmc->ioreg.idr, kcs_bmc->ioreg.odr, kcs_bmc->ioreg.str);
++    // 	chan,
++    // 	kcs_bmc->ioreg.idr, kcs_bmc->ioreg.odr, kcs_bmc->ioreg.str);
+ 
+     return 0;
+ }
+@@ -292,23 +279,25 @@ static int lingsi_kcs_remove(struct platform_device *pdev)
+     kcs_bmc_remove_device(kcs_bmc);
+     espi_lpc_remove_ioport(&priv->io_data);
+     espi_lpc_remove_ioport(&priv->io_cmd_stt);
++    // npcm7xx_kcs_enable_channel(kcs_bmc, false);
++    // npcm7xx_kcs_irq_mask_update(kcs_bmc, (KCS_BMC_EVENT_TYPE_IBF | KCS_BMC_EVENT_TYPE_OBE), 0);
+ 
+     return 0;
+ }
+ 
+ static const struct of_device_id lingsi_kcs_bmc_match[] = {
+     { .compatible = "lingsi,kcs-bmc" },
+-    { }
++    {}
+ };
+ MODULE_DEVICE_TABLE(of, lingsi_kcs_bmc_match);
+ 
+ static struct platform_driver lingsi_kcs_bmc_driver = {
+     .driver = {
+-        .name        = DEVICE_NAME,
+-        .of_match_table    = lingsi_kcs_bmc_match,
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_kcs_bmc_match,
+     },
+-    .probe    = lingsi_kcs_probe,
+-    .remove    = lingsi_kcs_remove,
++    .probe = lingsi_kcs_probe,
++    .remove = lingsi_kcs_remove,
+ };
+ module_platform_driver(lingsi_kcs_bmc_driver);
+ 
+diff --git a/drivers/char/ipmi/lingsi/lingsi_lpc.c b/drivers/char/ipmi/lingsi/lingsi_lpc.c
+new file mode 100644
+index 000000000000..82c48f124b6a
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_lpc.c
+@@ -0,0 +1,242 @@
++#include <linux/init.h>
++#include <linux/module.h>
++#include <linux/printk.h>
++#include <linux/of.h>
++#include <linux/io.h>
++#include <linux/platform_device.h>
++#include <linux/irq.h>
++#include <linux/interrupt.h>
++#include <linux/mfd/syscon.h>
++#include <linux/atomic.h>
++#include <linux/list.h>
++#include <linux/stdarg.h>
++#include "lingsi_espi_lpc_common.h"
++#define DEVICE_NAME "lingsi-lpc"
++
++#define LPC_CTRL0                   0x000
++#define LPC_SERIRQ_STOP_TO_MASK     GENMASK(27, 20)
++#define LPC_SERIRQ_STOP_TO_SHIFT    20
++#define LPC_SYNC_TO_MASK            GENMASK(19, 4)
++#define LPC_SYNC_TO_SHIFT           4
++#define LPC_CLK_PH                  BIT(1)
++#define LPC_ICAP_MODE               BIT(0)
++#define LPC_CTRL1                   0x004
++#define LPC_SYNC_MASK               GENMASK(11, 8)
++#define LPC_SYNC_SHIFT              8
++#define LPC_DATA_UP_MASK            GENMASK(7, 0)
++#define LPC_DATA_UP_SHIFT           0
++#define LPC_CTRL2_SERIRQ_SRC        0x008
++#define LPC_CTRL3                   0x00c
++#define LPC_INTR_SEND_CLR           BIT(2)
++#define LPC_SERIRQ_SEND             BIT(1)
++#define LPC_SYNC_VALID              BIT(0)
++#define LPC_INT_MSK                 0x010
++#define LPC_INT_CLR                 0x014
++#define LPC_INT_STT                 0x018
++#define LPC_INT_SERIRQ_STOP_INVALID BIT(4)
++#define LPC_INT_SERIRQ_STOP_TO      BIT(3)
++#define LPC_INT_SERIRQ_STOP         BIT(2)
++#define LPC_INT_SYNC_TO             BIT(1)
++#define LPC_INT_CMD_VALID           BIT(0)
++#define LPC_INT_RAW                 0x01c
++#define LPC_SERIRQ_SENT             0x020
++#define LPC_SERIRQ_MODE             0x024
++#define LPC_ADDR                    0x028
++#define LPC_RX                      0x02c
++#define LPC_DATA_DN_MASK            GENMASK(15, 8)
++#define LPC_DATA_DN_SHIFT           8
++#define LPC_IDCYC_MASK              GENMASK(7, 4)
++#define LPC_IDCYC_SHIFT             4
++#define LPC_START_MASK              GENMASK(3, 0)
++#define LPC_START_SHIFT             0
++#define LPC_FSM                     0x030
++
++#define LPC_TYPE_IO_READ   0x00
++#define LPC_TYPE_IO_WRITE  0x20
++#define LPC_TYPE_MEM_READ  0x40
++#define LPC_TYPE_MEM_WRITE 0x60
++
++static void serirq_int_set(struct lingsi_espi_lpc_struct *lpc, bool unmask)
++{
++    u32 int_msk;
++    unsigned long flags;
++    spin_lock_irqsave(&lpc->u.lpc.int_msk_lock, flags);
++    int_msk = ioread32(lpc->base + LPC_INT_MSK);
++    if (!unmask) {
++        int_msk &= ~LPC_INT_SERIRQ_STOP;
++    } else {
++        int_msk |= LPC_INT_SERIRQ_STOP;
++    }
++    iowrite32(int_msk, lpc->base + LPC_INT_MSK);
++    spin_unlock_irqrestore(&lpc->u.lpc.int_msk_lock, flags);
++}
++
++static irqreturn_t lingsi_lpc_irq(int irq, void *arg)
++{
++    struct lingsi_espi_lpc_struct *lpc = arg;
++    unsigned int_stt = ioread32(lpc->base + LPC_INT_STT);
++    if (int_stt & LPC_INT_CMD_VALID) {
++        u32 addr = ioread32(lpc->base + LPC_ADDR);
++        u32 rx = ioread32(lpc->base + LPC_RX);
++        u8 start_cycle_dir = rx & 0xff;
++        u8 data = rx >> 8;
++        u32 res = 0;
++        iowrite32(LPC_INT_CMD_VALID, lpc->base + LPC_INT_CLR);
++        switch (start_cycle_dir) {
++        case LPC_TYPE_IO_READ:
++            iord_short(lpc, 1, addr, &res);
++            break;
++        case LPC_TYPE_IO_WRITE:
++            iowr_short(lpc, 1, addr, &data);
++            break;
++        case LPC_TYPE_MEM_READ:
++            memrd_short(lpc, 1, addr, &res);
++            break;
++        case LPC_TYPE_MEM_WRITE:
++            memwr_short(lpc, 1, addr, &data);
++            break;
++        default:
++            BUG_ON(1);
++            while (1)
++                ;
++            break;
++        }
++        iowrite32(res, lpc->base + LPC_CTRL1);
++        iowrite32(LPC_SYNC_VALID, lpc->base + LPC_CTRL3);
++    }
++    if (int_stt & LPC_INT_SYNC_TO) {
++        iowrite32(LPC_INT_SYNC_TO, lpc->base + LPC_INT_CLR);
++        BUG_ON(1);
++        while (1)
++            ;
++    }
++    if (int_stt & LPC_INT_SERIRQ_STOP) {
++        u32 serirq_sent = ioread32(lpc->base + LPC_SERIRQ_SENT);
++        u32 serirq_src;
++        unsigned long flags;
++        spin_lock_irqsave(&lpc->u.lpc.serirq_src_lock, flags);
++        serirq_src = ioread32(lpc->base + LPC_CTRL2_SERIRQ_SRC);
++        serirq_src ^= (serirq_sent & lpc->u.lpc.serirq_edge_mask);
++        iowrite32(serirq_src, lpc->base + LPC_CTRL2_SERIRQ_SRC);
++        spin_unlock_irqrestore(&lpc->u.lpc.serirq_src_lock, flags);
++        iowrite32(LPC_INT_SERIRQ_STOP, lpc->base + LPC_INT_CLR);
++        if (!(serirq_src & lpc->u.lpc.serirq_edge_mask)) {
++            serirq_int_set(lpc, false);
++        }
++    }
++    if (int_stt & LPC_INT_SERIRQ_STOP_TO) {
++        iowrite32(LPC_INT_SERIRQ_STOP_TO, lpc->base + LPC_INT_CLR);
++        BUG_ON(1);
++        while (1)
++            ;
++    }
++    if (int_stt & LPC_INT_SERIRQ_STOP_INVALID) {
++        iowrite32(LPC_INT_SERIRQ_STOP_INVALID, lpc->base + LPC_INT_CLR);
++        BUG_ON(1);
++        while (1)
++            ;
++    }
++    return IRQ_HANDLED;
++}
++
++static void lpc_reg_init(void __iomem *base)
++{
++    iowrite32(LPC_INT_CMD_VALID | LPC_INT_SYNC_TO | LPC_INT_SERIRQ_STOP | LPC_INT_SERIRQ_STOP_TO | LPC_INT_SERIRQ_STOP_INVALID, base + LPC_INT_CLR);
++    iowrite32(LPC_INT_SYNC_TO | LPC_INT_SERIRQ_STOP_INVALID | LPC_INT_SERIRQ_STOP_TO | LPC_INT_CMD_VALID, base + LPC_INT_MSK);
++}
++
++static void lpc_send_edge_int_evt(struct lingsi_espi_lpc_struct *lpc, u8 idx)
++{
++    u32 serirq;
++    unsigned long flags;
++    lpc->u.lpc.serirq_edge_mask |= 1 << idx;
++    spin_lock_irqsave(&lpc->u.lpc.serirq_src_lock, flags);
++    serirq = ioread32(lpc->base + LPC_CTRL2_SERIRQ_SRC);
++    serirq |= 1 << idx;
++    iowrite32(serirq, lpc->base + LPC_CTRL2_SERIRQ_SRC);
++    spin_unlock_irqrestore(&lpc->u.lpc.serirq_src_lock, flags);
++    serirq_int_set(lpc, true);
++}
++
++static void lpc_send_level_int_evt(struct lingsi_espi_lpc_struct *lpc, u8 idx, u8 active)
++{
++    unsigned long flags;
++    u32 serirq;
++    spin_lock_irqsave(&lpc->u.lpc.serirq_src_lock, flags);
++    serirq = ioread32(lpc->base + LPC_CTRL2_SERIRQ_SRC);
++    if (active) {
++        serirq |= 1 << idx;
++    } else {
++        serirq &= ~1 << idx;
++    }
++    iowrite32(serirq, lpc->base + LPC_CTRL2_SERIRQ_SRC);
++    spin_unlock_irqrestore(&lpc->u.lpc.serirq_src_lock, flags);
++}
++
++static int lingsi_lpc_probe(struct platform_device *pdev)
++{
++    struct device *dev = &pdev->dev;
++    struct lingsi_espi_lpc_struct *priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++    struct resource *res;
++    int irq, rc;
++    if (!priv)
++        return -ENOMEM;
++
++    priv->raise_edge_irq = lpc_send_edge_int_evt;
++    priv->set_level_irq = lpc_send_level_int_evt;
++
++    res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++    if (!res) {
++        dev_err(dev, "cannot get resource\n");
++        return -ENODEV;
++    }
++    priv->base = devm_ioremap_resource(dev, res);
++    if (IS_ERR(priv->base)) {
++        dev_err(dev, "cannot map registers\n");
++        return PTR_ERR(priv->base);
++    }
++    irq = platform_get_irq(pdev, 0);
++    if (irq < 0) {
++        dev_err(dev, "cannot get irq\n");
++        return irq;
++    }
++    rc = devm_request_irq(dev, irq, lingsi_lpc_irq, IRQF_SHARED, dev_name(dev), priv);
++    if (rc < 0) {
++        dev_err(dev, "cannot request irq\n");
++        return rc;
++    }
++
++    INIT_LIST_HEAD(&priv->peri_io_list);
++    INIT_LIST_HEAD(&priv->peri_mem_list);
++    spin_lock_init(&priv->u.lpc.serirq_src_lock);
++    spin_lock_init(&priv->u.lpc.int_msk_lock);
++
++    platform_set_drvdata(pdev, priv);
++
++    lpc_reg_init(priv->base);
++
++    return 0;
++}
++
++static int lingsi_lpc_remove(struct platform_device *pdev)
++{
++    return 0;
++}
++
++static const struct of_device_id lingsi_lpc_match[] = {
++    { .compatible = "lingsi,lpc" },
++    {}
++};
++MODULE_DEVICE_TABLE(of, lingsi_lpc_match);
++
++static struct platform_driver lingsi_lpc_driver = {
++    .driver = {
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_lpc_match,
++    },
++    .probe = lingsi_lpc_probe,
++    .remove = lingsi_lpc_remove,
++};
++module_platform_driver(lingsi_lpc_driver);
++
++MODULE_LICENSE("GPL");
+diff --git a/drivers/char/ipmi/lingsi/lingsi_mmbi.c b/drivers/char/ipmi/lingsi/lingsi_mmbi.c
+index cccebffa1e8f..c50a822666b7 100644
+--- a/drivers/char/ipmi/lingsi/lingsi_mmbi.c
++++ b/drivers/char/ipmi/lingsi/lingsi_mmbi.c
+@@ -11,28 +11,24 @@
+ #include <linux/of_platform.h>
+ #include <linux/sizes.h>
+ #include "lingsi_espi_lpc_common.h"
+-#define DEVICE_NAME    "lingsi-mmbi"
+-#define MMBI_DESC_SIGNATURE "$MMBI$"
+-#define SET_B_UP(mmbi) set_bit(1,(void *)&((mmbi)->ros.b2h_wp))
+-#define CLR_B_UP(mmbi) clr_bit(1,(void *)&((mmbi)->ros.b2h_wp))
+-#define SET_B_RST(mmbi) set_bit(0,(void *)&((mmbi)->ros.b2h_wp))
+-#define CLR_B_RST(mmbi) clr_bit(0,(void *)&((mmbi)->ros.b2h_wp))
+-#define MMBI_DESC_LEN 63
+-
+-struct host_ros
+-{
++#define DEVICE_NAME         "lingsi-mmbi"
++#define MMBI_DESC_SIGNATURE "#MMBI$"
++// #define SET_B_UP(mmbi) set_bit(1,(void *)&((mmbi)->ros.b2h_wp))
++// #define CLR_B_UP(mmbi) clear_bit(1,(void *)&((mmbi)->ros.b2h_wp))
++// #define SET_B_RST(mmbi) set_bit(0,(void *)&((mmbi)->ros.b2h_wp))
++// #define CLR_B_RST(mmbi) clear_bit(0,(void *)&((mmbi)->ros.b2h_wp))
++
++struct host_ros {
+     u32 b2h_wp;
+     u32 h2b_rp;
+ };
+ 
+-struct host_rws
+-{
++struct host_rws {
+     u32 h2b_wp;
+     u32 b2h_rp;
+ };
+ 
+-struct mmbi_desc
+-{
++struct mmbi_desc {
+     u8 signature[6];
+     u8 version;
+     u8 os_use;
+@@ -52,20 +48,17 @@ struct mmbi_desc
+     u32 bmc_int_l;
+     u8 reserved2[4];
+     u8 bmc_int_v;
+-    u8 reserved3[7];
+-    u8 crc;
++    u8 reserved3[8];
+ } __attribute__((packed));
+ 
+-struct mmbi_struct
+-{
++struct mmbi_struct {
+     struct mmbi_desc desc;
+     struct host_ros ros;
+     struct host_rws rws;
+     u32 buf[];
+ };
+ 
+-struct lingsi_mmbi
+-{
++struct lingsi_mmbi {
+     struct lingsi_espi_lpc_struct *parent;
+     struct lingsi_peri_mem mem;
+     u32 host_addr;
+@@ -77,130 +70,73 @@ struct lingsi_mmbi
+ 
+ static inline u32 get_mmbi_total_size(struct lingsi_mmbi *priv)
+ {
+-    return PAGE_SIZE * (1<<priv->size_order);
++    return PAGE_SIZE * (1 << priv->size_order);
+ }
+ 
+-static inline uint8_t crc8(uint8_t *data, int len) {
+-    uint8_t crc = 0x00;
+-    for (int i = 0; i < len; ++i) {
+-        crc ^= data[i];
+-        for (int bit = 0; bit < 8; ++bit) {
+-            if (crc & 0x80) {
+-                /* CRC-8-ATM polynomial */
+-                crc = (crc << 1) ^ 0x07;
+-            } else {
+-                crc <<= 1;
+-            }
+-        }
+-    }
+-    return crc;
+-}
+-
+-static void init_mmbi_mem(struct lingsi_mmbi *priv,u32 total_size)
++static void init_mmbi_mem(struct lingsi_mmbi *priv, u32 total_size)
+ {
+     struct mmbi_struct *base = priv->virt;
+-    memset(&base->desc, 0, sizeof(base->desc));
+-    memcpy(base->desc.signature,MMBI_DESC_SIGNATURE,sizeof(base->desc.signature));
++    memcpy(base->desc.signature, MMBI_DESC_SIGNATURE, sizeof(base->desc.signature));
+     base->desc.version = 1;
+     base->desc.os_use = 0;
+-    base->desc.b2h_l = (total_size - sizeof(struct mmbi_struct))/2;
+-    base->desc.h2b_l = (total_size - sizeof(struct mmbi_struct))/2;
+-    base->desc.b2h_ba = (u32)((u8 *)base->buf - (u8 *)base)/8;
+-    base->desc.h2b_ba  = (u32)((u8 *)base->buf - (u8 *)base + total_size - base->desc.h2b_l) / 8;
++    base->desc.b2h_l = (total_size - sizeof(struct mmbi_struct)) / 2;
++    base->desc.h2b_l = (total_size - sizeof(struct mmbi_struct)) / 2;
++    base->desc.b2h_ba = (u32)((u8 *)base->buf - (u8 *)base) / 8;
++    base->desc.h2b_ba = (u32)((u8 *)base->buf - (u8 *)base + total_size - base->desc.h2b_l) / 8;
+     base->desc.buft = 1;
+-    base->desc.h_ros_p = (u32)((u8 *)&base->ros - (u8 *)base)/8;
+-    base->desc.h_rws_p = (u32)((u8 *)&base->rws - (u8 *)base)/8;
+-    base->desc.h_int_t = 1;
+-    base->desc.h_int_l = 1;
+-    base->desc.h_int_v = 0;
++    base->desc.h_ros_p = (u32)((u8 *)&base->ros - (u8 *)base) / 8;
++    base->desc.h_rws_p = (u32)((u8 *)&base->rws - (u8 *)base) / 8;
++    base->desc.h_int_t = 3;
++    base->desc.h_int_l = priv->vw_idx;
++    base->desc.h_int_v = priv->vw_data;
+     base->desc.bmc_int_t = 0;
+     base->desc.bmc_int_l = 0;
+     base->desc.bmc_int_v = 0;
+-    base->desc.crc = crc8((uint8_t *)base, MMBI_DESC_LEN);
+-    SET_B_UP(base);
++    //SET_B_UP(base);
+ }
+ 
+-#if 0
+-static void init_mmbi_mem(struct lingsi_mmbi *priv,u32 total_size)
+-{
+-    u8 ast_mmbi[] = {0x24, 0x4D, 0x4D, 0x42, 0x49, 0x24, 0x01, 0x00,
+-                    0x00, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x00,
+-                    0x08, 0x80, 0x00, 0x00, 0x00, 0x08, 0x00, 0x08,
+-                    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-                    0x40, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
+-                    0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb9};
+-    struct mmbi_struct *base = priv->virt;
+-    memset(&base->desc, 0, sizeof(base->desc));
+-    memcpy(base->desc.signature,MMBI_DESC_SIGNATURE,sizeof(base->desc.signature));
+-    base->desc.version = 1;
+-    base->desc.os_use = 0;
+-    base->desc.b2h_l = (total_size - sizeof(struct mmbi_struct))/2;
+-    base->desc.h2b_l = (total_size - sizeof(struct mmbi_struct))/2;
+-    base->desc.b2h_ba = (u32)((u8 *)base->buf - (u8 *)base)/8;
+-    base->desc.h2b_ba  = (u32)((u8 *)base->buf - (u8 *)base + total_size - base->desc.h2b_l) / 8;
+-    base->desc.buft = 1;
+-    base->desc.h_ros_p = (u32)((u8 *)&base->ros - (u8 *)base)/8;
+-    base->desc.h_rws_p = (u32)((u8 *)&base->rws - (u8 *)base)/8;
+-    base->desc.h_int_t = 1;
+-    base->desc.h_int_l = 1;
+-    base->desc.h_int_v = 0;
+-    base->desc.bmc_int_t = 0;
+-    base->desc.bmc_int_l = 0;
+-    base->desc.bmc_int_v = 0;
+-
+-    memcpy(&base->desc,ast_mmbi,sizeof(ast_mmbi));
+-    SET_B_UP(base);
+-}
+-#endif
+-
+-static bool mmbi_host_read(struct lingsi_peri_mem *mem,u32 addr, u8 size,void *res)
++static bool mmbi_host_read(struct lingsi_peri_mem *mem, u32 addr, u8 size, void *res)
+ {
+     struct lingsi_mmbi *priv = mem->ctx;
+-    if(priv->host_addr > addr || priv->host_addr + get_mmbi_total_size(priv) <= addr)
+-    {
++    if (priv->host_addr > addr || priv->host_addr + get_mmbi_total_size(priv) <= addr) {
+         return false;
+     }
+-    switch(size)
+-    {
++    switch (size) {
+     case 1:
+         *(u8 *)res = *((u8 *)priv->virt + addr - priv->host_addr);
+-    break;
++        break;
+     case 2:
+         *(u16 *)res = *(u16 *)((u8 *)priv->virt + addr - priv->host_addr);
+-    break;
++        break;
+     case 4:
+         *(u32 *)res = *(u32 *)((u8 *)priv->virt + addr - priv->host_addr);
+-    break;
++        break;
+     default:
+         BUG_ON(1);
+-    break;
++        break;
+     }
+     return true;
+ }
+ 
+-static bool mmbi_host_write(struct lingsi_peri_mem *mem,u32 addr, u8 size,u8 *data)
++static bool mmbi_host_write(struct lingsi_peri_mem *mem, u32 addr, u8 size, u8 *data)
+ {
+     struct lingsi_mmbi *priv = mem->ctx;
+-    if(priv->host_addr > addr || priv->host_addr + get_mmbi_total_size(priv) <= addr)
+-    {
++    if (priv->host_addr > addr || priv->host_addr + get_mmbi_total_size(priv) <= addr) {
+         return false;
+     }
+-    switch(size)
+-    {
++    switch (size) {
+     case 1:
+         *((u8 *)priv->virt + addr - priv->host_addr) = data[0];
+-    break;
++        break;
+     case 2:
+-        *(u16 *)((u8 *)priv->virt + addr - priv->host_addr) = data[1]<<8 | data[0];
+-    break;
++        *(u16 *)((u8 *)priv->virt + addr - priv->host_addr) = data[1] << 8 | data[0];
++        break;
+     case 4:
+-        *(u32 *)((u8 *)priv->virt + addr - priv->host_addr) = data[3]<<24|data[2]<<16|data[1]<<8|data[0];
+-    break;
++        *(u32 *)((u8 *)priv->virt + addr - priv->host_addr) = data[3] << 24 | data[2] << 16 | data[1] << 8 | data[0];
++        break;
+     default:
+         BUG_ON(1);
+-    break;
++        break;
+     }
+     return true;
+ }
+@@ -213,26 +149,23 @@ static int lingsi_mmbi_probe(struct platform_device *pdev)
+     struct lingsi_mmbi *priv;
+     struct device_node *parent = of_get_parent(dev->of_node);
+     int rc;
+-    if(!parent)
+-    {
++    if (!parent) {
+         dev_err(dev, "cannot get parent node\n");
+         return -ENODEV;
+     }
+     parent_pdev = of_find_device_by_node(parent);
+-    if(!parent_pdev)
+-    {
++    if (!parent_pdev) {
+         dev_err(dev, "cannot get parent device\n");
+         return -ENODEV;
+     }
+     espi_lpc = platform_get_drvdata(parent_pdev);
+-    if(!espi_lpc)
+-    {
++    if (!espi_lpc) {
+         dev_err(dev, "espi lpc not inited\n");
+         return -EPROBE_DEFER;
+     }
+     priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+-    if (!priv){
+-           dev_err(dev, "cannot alloc lingsi_mmbi mem\n");
++    if (!priv) {
++        dev_err(dev, "cannot alloc lingsi_mmbi mem\n");
+         return -ENOMEM;
+     }
+     priv->parent = espi_lpc;
+@@ -241,22 +174,23 @@ static int lingsi_mmbi_probe(struct platform_device *pdev)
+         dev_err(dev, "cannot get MMBI host address\n");
+         return -ENODEV;
+     }
+-    rc = of_property_read_u32(dev->of_node,"size-order",&priv->size_order);
++    rc = of_property_read_u32(dev->of_node, "size-order", &priv->size_order);
+     if (rc) {
+         dev_err(dev, "cannot get MMBI size order\n");
+         return -EINVAL;
+     }
+-    priv->virt = (void *)devm_get_free_pages(dev,GFP_KERNEL,priv->size_order);
+-    if(!priv->virt)
+-    {
+-           dev_err(dev, "cannot alloc mmbi mem\n");
++    priv->virt = (void *)devm_get_free_pages(dev, GFP_KERNEL, priv->size_order);
++    if (!priv->virt) {
++        dev_err(dev, "cannot alloc mmbi mem\n");
+         return -ENOMEM;
+     }
+-    init_mmbi_mem(priv,get_mmbi_total_size(priv));
++    init_mmbi_mem(priv, get_mmbi_total_size(priv));
++
++    espi_lpc_add_mem(espi_lpc, &priv->mem, mmbi_host_read, mmbi_host_write, priv);
++    ;
+ 
+-    espi_lpc_add_mem(espi_lpc,&priv->mem,mmbi_host_read,mmbi_host_write,priv);;
++    platform_set_drvdata(pdev, priv);
+ 
+-    platform_set_drvdata(pdev,priv);
+     return 0;
+ }
+ 
+@@ -270,18 +204,18 @@ static int lingsi_mmbi_remove(struct platform_device *pdev)
+ 
+ static const struct of_device_id lingsi_mmbi_match[] = {
+     { .compatible = "lingsi,mmbi" },
+-    { }
++    {}
+ };
+ MODULE_DEVICE_TABLE(of, lingsi_mmbi_match);
+ 
+ static struct platform_driver lingsi_mmbi_driver = {
+     .driver = {
+-        .name        = DEVICE_NAME,
+-        .of_match_table    = lingsi_mmbi_match,
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_mmbi_match,
+     },
+-    .probe    = lingsi_mmbi_probe,
+-    .remove    = lingsi_mmbi_remove,
++    .probe = lingsi_mmbi_probe,
++    .remove = lingsi_mmbi_remove,
+ };
+ module_platform_driver(lingsi_mmbi_driver);
+ 
+-MODULE_LICENSE("GPL");
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_sio.c b/drivers/char/ipmi/lingsi/lingsi_sio.c
+index 9922d04f48f3..b230526e93a3 100644
+--- a/drivers/char/ipmi/lingsi/lingsi_sio.c
++++ b/drivers/char/ipmi/lingsi/lingsi_sio.c
+@@ -10,149 +10,136 @@
+ #include <linux/atomic.h>
+ #include <linux/of_platform.h>
+ #include "lingsi_espi_lpc_common.h"
+-#define DEVICE_NAME    "lingsi-sio"
++#define DEVICE_NAME "lingsi-sio"
+ 
+-struct lingsi_ldn_dev
+-{
+-    u8 base_addr_lingsib;
++struct lingsi_ldn_dev {
++    u8 base_addr_lsb;
+     u8 base_addr_msb;
+     u8 enable;
+ };
+ 
+-struct lingsi_sio
+-{
++struct lingsi_sio {
+     struct lingsi_espi_lpc_struct *parent;
+-    struct lingsi_peri_ioport io_2e,io_2f;
+-    struct lingsi_ldn_dev ldn_2,ldn_3,ldn_4,ldn_7,
+-                        ldn_b,ldn_c,ldn_d,ldn_e,ldn_f;
++    struct lingsi_peri_ioport io_2e, io_2f;
++    struct lingsi_ldn_dev ldn_2, ldn_3, ldn_4, ldn_7,
++        ldn_b, ldn_c, ldn_d, ldn_e, ldn_f;
+     struct lingsi_ldn_dev *ldn;
+     u8 index;
+     u8 ldn_num;
+     u8 reg_2x[16];
+ };
+ 
+-static void select_ldn(struct lingsi_sio *sio,u8 ldn_num)
++static void select_ldn(struct lingsi_sio *sio, u8 ldn_num)
+ {
+-    switch(ldn_num)
+-    {
++    switch (ldn_num) {
+     case 0x2:
+         sio->ldn = &sio->ldn_2;
+-    break;
++        break;
+     case 0x3:
+         sio->ldn = &sio->ldn_3;
+-    break;
++        break;
+     case 0x4:
+         sio->ldn = &sio->ldn_4;
+-    break;
++        break;
+     case 0x7:
+         sio->ldn = &sio->ldn_7;
+-    break;
++        break;
+     case 0xb:
+         sio->ldn = &sio->ldn_b;
+-    break;
++        break;
+     case 0xc:
+         sio->ldn = &sio->ldn_c;
+-    break;
++        break;
+     case 0xd:
+         sio->ldn = &sio->ldn_d;
+-    break;
++        break;
+     case 0xe:
+         sio->ldn = &sio->ldn_e;
+-    break;
++        break;
+     case 0xf:
+         sio->ldn = &sio->ldn_f;
+-    break;
++        break;
+     }
+ }
+ 
+-static void io_2e_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
++static void io_2e_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
+ {
+     struct lingsi_sio *priv = ioport->ctx;
+-    u8 *val=res;
++    u8 *val = res;
+     *val = priv->index;
+ }
+ 
+-static void io_2e_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
++static void io_2e_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
+ {
+     struct lingsi_sio *priv = ioport->ctx;
+     priv->index = *data;
+ }
+ 
+-static u8 ldn_dev_read(struct lingsi_ldn_dev *ldn,u8 index)
++static u8 ldn_dev_read(struct lingsi_ldn_dev *ldn, u8 index)
+ {
+     u8 val = 0;
+-    switch(index)
+-    {
++    switch (index) {
+     case 0x30:
+         val = ldn->enable;
+-    break;
++        break;
+     case 0x60:
+         val = ldn->base_addr_msb;
+-    break;
++        break;
+     case 0x61:
+-        val = ldn->base_addr_lingsib;
+-    break;
++        val = ldn->base_addr_lsb;
++        break;
+     }
+     return val;
+ }
+ 
+-static void io_2f_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
++static void io_2f_read(struct lingsi_peri_ioport *ioport, u8 size, void *res)
+ {
+     struct lingsi_sio *sio = ioport->ctx;
+-    u8 *val=res;
+-    if(sio->index == 0x7)
+-    {
++    u8 *val = res;
++    if (sio->index == 0x7) {
+         *val = sio->ldn_num;
+-    }else if(sio->index == 0x20)
+-    {
++    } else if (sio->index == 0x20) {
+         *val = 0x26;
+-    }else if(sio->index >= 0x20 && sio->index < 0x30)
+-    {
+-        *val = sio->reg_2x[sio->index&0xf];
+-    }else
+-    {
+-        BUG_ON(sio->ldn==NULL);
+-        *val = ldn_dev_read(sio->ldn,sio->index);
++    } else if (sio->index >= 0x20 && sio->index < 0x30) {
++        *val = sio->reg_2x[sio->index & 0xf];
++    } else {
++        BUG_ON(sio->ldn == NULL);
++        *val = ldn_dev_read(sio->ldn, sio->index);
+     }
+ }
+ 
+-static void ldn_dev_write(struct lingsi_ldn_dev *ldn,u8 index,u8 val)
++static void ldn_dev_write(struct lingsi_ldn_dev *ldn, u8 index, u8 val)
+ {
+-    switch(index)
+-    {
++    switch (index) {
+     case 0x30:
+         ldn->enable = val;
+-    break;
++        break;
+     case 0x60:
+         ldn->base_addr_msb = val;
+-    break;
++        break;
+     case 0x61:
+-        ldn->base_addr_lingsib = val;
+-    break;
++        ldn->base_addr_lsb = val;
++        break;
+     }
+ }
+ 
+-static void io_2f_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
++static void io_2f_write(struct lingsi_peri_ioport *ioport, u8 size, u8 *data)
+ {
+     struct lingsi_sio *sio = ioport->ctx;
+-    if(sio->index == 0x7)
+-    {
++    if (sio->index == 0x7) {
+         sio->ldn_num = *data;
+-        select_ldn(sio,sio->ldn_num);
+-    }else if(sio->index >= 0x20 && sio->index < 0x30)
+-    {
+-        sio->reg_2x[sio->index&0xf] = *data;
+-    }else
+-    {
+-        BUG_ON(sio->ldn==NULL);
+-        ldn_dev_write(sio->ldn,sio->index,*data);
++        select_ldn(sio, sio->ldn_num);
++    } else if (sio->index >= 0x20 && sio->index < 0x30) {
++        sio->reg_2x[sio->index & 0xf] = *data;
++    } else {
++        BUG_ON(sio->ldn == NULL);
++        ldn_dev_write(sio->ldn, sio->index, *data);
+     }
+ }
+ 
+-#define SIO_PORT_ADD(x) espi_lpc_add_ioport(espi_lpc,&priv->io_##x,io_##x##_read,io_##x##_write,0x##x,priv)
++#define SIO_PORT_ADD(x)    espi_lpc_add_ioport(espi_lpc, &priv->io_##x, io_##x##_read, io_##x##_write, 0x##x, priv)
+ #define SIO_PORT_REMOVE(x) espi_lpc_remove_ioport(&priv->io_##x)
+ 
+-
+ static int lingsi_sio_probe(struct platform_device *pdev)
+ {
+     struct device *dev = &pdev->dev;
+@@ -160,33 +147,30 @@ static int lingsi_sio_probe(struct platform_device *pdev)
+     struct lingsi_espi_lpc_struct *espi_lpc;
+     struct lingsi_sio *priv;
+     struct device_node *parent = of_get_parent(dev->of_node);
+-    if(!parent)
+-    {
++    if (!parent) {
+         dev_err(dev, "cannot get parent node\n");
+         return -ENODEV;
+     }
+     parent_pdev = of_find_device_by_node(parent);
+-    if(!parent_pdev)
+-    {
++    if (!parent_pdev) {
+         dev_err(dev, "cannot get parent device\n");
+         return -ENODEV;
+     }
+     espi_lpc = platform_get_drvdata(parent_pdev);
+-    if(!espi_lpc)
+-    {
++    if (!espi_lpc) {
+         dev_err(dev, "espi lpc not inited\n");
+         return -EPROBE_DEFER;
+     }
+     priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+-    if (!priv){
+-           dev_err(dev, "cannot alloc lingsi_sio mem\n");
++    if (!priv) {
++        dev_err(dev, "cannot alloc lingsi_sio mem\n");
+         return -ENOMEM;
+     }
+     priv->parent = espi_lpc;
+     SIO_PORT_ADD(2e);
+     SIO_PORT_ADD(2f);
+ 
+-    platform_set_drvdata(pdev,priv);
++    platform_set_drvdata(pdev, priv);
+ 
+     return 0;
+ }
+@@ -201,18 +185,18 @@ static int lingsi_sio_remove(struct platform_device *pdev)
+ 
+ static const struct of_device_id lingsi_sio_match[] = {
+     { .compatible = "lingsi,sio" },
+-    { }
++    {}
+ };
+ MODULE_DEVICE_TABLE(of, lingsi_sio_match);
+ 
+ static struct platform_driver lingsi_sio_driver = {
+     .driver = {
+-        .name        = DEVICE_NAME,
+-        .of_match_table    = lingsi_sio_match,
++        .name = DEVICE_NAME,
++        .of_match_table = lingsi_sio_match,
+     },
+-    .probe    = lingsi_sio_probe,
+-    .remove    = lingsi_sio_remove,
++    .probe = lingsi_sio_probe,
++    .remove = lingsi_sio_remove,
+ };
+ module_platform_driver(lingsi_sio_driver);
+ 
+-MODULE_LICENSE("GPL");
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_vuart.c b/drivers/char/ipmi/lingsi/lingsi_vuart.c
+index 9012cdeae3e4..4c399940cf26 100644
+--- a/drivers/char/ipmi/lingsi/lingsi_vuart.c
++++ b/drivers/char/ipmi/lingsi/lingsi_vuart.c
+@@ -3,257 +3,53 @@
+ #include <linux/printk.h>
+ #include <linux/of.h>
+ #include <linux/io.h>
+-#include <linux/platform_device.h>
+-#include <linux/irq.h>
+-#include <linux/interrupt.h>
+-#include <linux/mfd/syscon.h>
+-#include <linux/atomic.h>
+ #include <linux/of_platform.h>
+-#include <linux/workqueue.h>
+ #include <linux/serial.h>
+ #include <linux/serial_core.h>
+-#include <linux/kfifo.h>
+ #include <linux/tty.h>
+ #include <linux/tty_flip.h>
+-#include "lingsi_espi_lpc_common.h"
++#include "lingsi_vuart.h"
++#define DEVICE_NAME           "lingsi-vuart"
++#define LINGSI_VUART_NR_UARTS 3
+ 
+-#define LS_VUART_NR_UARTS 3
+-#define DEVICE_NAME    "lingsi-vuart"
+-
+-struct vuart_host_reg
+-{
+-    uint8_t dll;
+-    uint8_t dlh;
+-    uint8_t ier;
+-    uint8_t fcr;
+-    uint8_t lcr;
+-    uint8_t mcr;
+-    uint8_t scr;
+-};
+-
+-struct lingsi_vuart
+-{
+-    struct lingsi_espi_lpc_struct *parent;
+-    struct uart_port uartp;
+-    struct lingsi_upstream_irq up_irq;
+-    struct lingsi_host_reg host_reg;
+-    struct lingsi_peri_ioport ioport[8];
+-    struct vuart_host_reg vuart_reg;
+-    bool level_up_irq_active;
+-    bool local_enabled;
++static struct uart_driver lingsi_vuart_driver = {
++    .owner = THIS_MODULE,
++    .driver_name = DEVICE_NAME,
++    .dev_name = "ttyVS",
++    .major = 0,
++    .minor = 0,
++    .nr = LINGSI_VUART_NR_UARTS,
+ };
+ 
+-static bool vuart_rx_available(struct lingsi_vuart *priv)
++bool lingsi_vuart_local_tx_empty(struct lingsi_vuart *vuart)
+ {
+-    struct uart_port *port = &priv->uartp;
++    struct uart_port *port = &vuart->port;
+     struct circ_buf *xmit = &port->state->xmit;
+-    if (priv->local_enabled && !uart_circ_empty(xmit))
+-    {
+-        return true;
+-    }else
+-    {
+-        return false;
+-    }
++    return !vuart->local_enabled || uart_circ_empty(xmit);
+ }
++EXPORT_SYMBOL(lingsi_vuart_local_tx_empty);
+ 
+-static u8 vuart_reg_get_iir(struct lingsi_vuart *priv)
++u8 lingsi_vuart_get_tx_char(struct lingsi_vuart *vuart)
+ {
+-    bool tx_empty = true;
+-    u8 iir;
+-    iir = priv->vuart_reg.fcr&0x1?0xc0:0;
+-    if((priv->vuart_reg.ier&0x1)&&vuart_rx_available(priv))
+-    {
+-        iir |= 0x4;
+-    }else if((priv->vuart_reg.ier&0x2)&tx_empty)
+-    {
+-        iir |= 0x2;
+-    }else
+-    {
+-        iir |= 0x1;
+-    }
+-    return iir;
+-}
+-
+-static void vuart_report_inactive_level_up_irq(struct lingsi_vuart *priv)
+-{
+-    if((vuart_reg_get_iir(priv)&0xf)==0x1)
+-    {
+-        if(priv->up_irq.type & IRQ_TYPE_LEVEL_MASK)
+-        {
+-            if(priv->level_up_irq_active)
+-            {
+-                espi_lpc_set_level_irq(priv->parent,priv->up_irq.id,0);
+-                priv->level_up_irq_active = false;
+-            }
+-        }
+-    }
++    u8 val;
++    struct circ_buf *xmit = &vuart->port.state->xmit;
++    val = xmit->buf[xmit->tail++];
++    xmit->tail %= UART_XMIT_SIZE;
++    vuart->port.icount.tx++;
++    return val;
+ }
++EXPORT_SYMBOL(lingsi_vuart_get_tx_char);
+ 
+-static void vuart_report_active_edge_level_up_irq(struct lingsi_vuart *priv)
++void lingsi_vuart_char_rx_handle(struct lingsi_vuart *vuart, u8 val)
+ {
+-    if((vuart_reg_get_iir(priv)&0xf)==0x1)
+-    {
+-        return;
+-    }
+-    if(priv->up_irq.type & IRQ_TYPE_LEVEL_MASK)
+-    {
+-        if(!priv->level_up_irq_active)
+-        {
+-            espi_lpc_set_level_irq(priv->parent,priv->up_irq.id,1);
+-            priv->level_up_irq_active = true;
+-        }
+-    }else
+-    {
+-        espi_lpc_raise_edge_irq(priv->parent,priv->up_irq.id);
+-    }
+-}
+-
+-static void vuart_reg0_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    struct circ_buf *xmit = &priv->uartp.state->xmit;
+-    u8 *val = res;
+-    if(priv->vuart_reg.lcr&0x80)
+-    {
+-        *val = priv->vuart_reg.dll;
+-    }else if(vuart_rx_available(priv))
+-    {
+-        *val = xmit->buf[xmit->tail++];
+-        xmit->tail %= UART_XMIT_SIZE;
+-        priv->uartp.icount.tx++;
+-        vuart_report_inactive_level_up_irq(priv);
+-    }
+-}
+-
+-static void vuart_reg0_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    struct uart_port *port = &priv->uartp;
+-    if(priv->vuart_reg.lcr&0x80)
+-    {
+-        priv->vuart_reg.dll = *data;
+-    }else if(priv->local_enabled)
+-    {
++    struct uart_port *port = &vuart->port;
++    if (vuart->local_enabled) {
+         port->icount.rx++;
+-        tty_insert_flip_char(&port->state->port, *data, TTY_NORMAL);
++        tty_insert_flip_char(&port->state->port, val, TTY_NORMAL);
+         tty_flip_buffer_push(&port->state->port);
+-        //vuart_report_inactive_level_up_irq(priv);
+-    }
+-}
+-
+-static void vuart_reg1_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    u8 *val = res;
+-    if(priv->vuart_reg.lcr&0x80)
+-    {
+-        *val = priv->vuart_reg.dlh;
+-    }else
+-    {
+-        *val = priv->vuart_reg.ier;
+     }
+ }
+-
+-static void vuart_reg1_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    if(priv->vuart_reg.lcr&0x80)
+-    {
+-        priv->vuart_reg.dlh = *data;
+-    }else
+-    {
+-        priv->vuart_reg.ier = *data;
+-        vuart_report_active_edge_level_up_irq(priv);
+-    }
+-}
+-
+-static void vuart_reg2_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    u8 *val = res;
+-    *val = vuart_reg_get_iir(priv);
+-}
+-
+-static void vuart_reg2_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    priv->vuart_reg.fcr = *data;
+-}
+-
+-static void vuart_reg3_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    u8 *val = res;
+-    *val = priv->vuart_reg.lcr;
+-}
+-
+-static void vuart_reg3_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    priv->vuart_reg.lcr = *data;
+-}
+-
+-static void vuart_reg4_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    u8 *val = res;
+-    *val = priv->vuart_reg.mcr;
+-}
+-
+-static void vuart_reg4_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    priv->vuart_reg.mcr = *data;
+-}
+-
+-static void vuart_reg5_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    u8 *val = res;
+-    *val = 0x60;
+-    if(vuart_rx_available(priv))
+-    {
+-        *val |= 0x1;
+-    }
+-}
+-
+-static void vuart_reg5_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
+-{
+-    BUG_ON(1);
+-}
+-
+-static void vuart_reg6_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
+-{
+-    u8 *val = res;
+-    *val = 0;
+-}
+-
+-static void vuart_reg6_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
+-{
+-    BUG_ON(1);
+-}
+-
+-static void vuart_reg7_read(struct lingsi_peri_ioport *ioport,u8 size,void *res)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    u8 *val = res;
+-    *val = priv->vuart_reg.scr;
+-}
+-
+-static void vuart_reg7_write(struct lingsi_peri_ioport *ioport,u8 size,u8 *data)
+-{
+-    struct lingsi_vuart *priv = ioport->ctx;
+-    priv->vuart_reg.scr = *data;
+-}
+-
+-static struct uart_driver lingsi_vuart_driver = {
+-    .owner        = THIS_MODULE,
+-    .driver_name    = DEVICE_NAME,
+-    .dev_name    = "ttyS",
+-    .major        = 0,
+-    .minor        = 0,
+-    .nr        = LS_VUART_NR_UARTS,
+-};
++EXPORT_SYMBOL(lingsi_vuart_char_rx_handle);
+ 
+ static unsigned int lingsi_vuart_tx_empty(struct uart_port *port)
+ {
+@@ -267,41 +63,36 @@ static unsigned int lingsi_vuart_get_mctrl(struct uart_port *port)
+ 
+ static void lingsi_vuart_set_mctrl(struct uart_port *port, unsigned int mctrl)
+ {
+-
+ }
+ 
+ static void lingsi_vuart_stop_tx(struct uart_port *port)
+ {
+-
+ }
+ 
+ static void lingsi_vuart_stop_rx(struct uart_port *port)
+ {
+-
+ }
+ 
+ static void lingsi_vuart_start_tx(struct uart_port *port)
+ {
+-
+ }
+ 
+ static void lingsi_vuart_set_termios(struct uart_port *port,
+-                 struct ktermios *termios,
+-                 const struct ktermios *old)
++                                     struct ktermios *termios,
++                                     const struct ktermios *old)
+ {
+-
+ }
+ 
+ static int lingsi_vuart_startup(struct uart_port *port)
+ {
+-    struct lingsi_vuart *priv = container_of(port,struct lingsi_vuart,uartp);
++    struct lingsi_vuart *priv = container_of(port, struct lingsi_vuart, port);
+     priv->local_enabled = true;
+     return 0;
+ }
+ 
+ static void lingsi_vuart_shutdown(struct uart_port *port)
+ {
+-    struct lingsi_vuart *priv = container_of(port,struct lingsi_vuart,uartp);
++    struct lingsi_vuart *priv = container_of(port, struct lingsi_vuart, port);
+     priv->local_enabled = false;
+ }
+ 
+@@ -312,158 +103,54 @@ static const char *lingsi_vuart_type(struct uart_port *port)
+ 
+ static void lingsi_vuart_config_port(struct uart_port *port, int flags)
+ {
+-
+ }
+ 
+ static const struct uart_ops lingsi_vuart_ops = {
+-    .tx_empty       = lingsi_vuart_tx_empty,
+-    .get_mctrl      = lingsi_vuart_get_mctrl,
+-    .set_mctrl      = lingsi_vuart_set_mctrl,
+-    .start_tx       = lingsi_vuart_start_tx,
+-    .stop_tx        = lingsi_vuart_stop_tx,
+-    .stop_rx        = lingsi_vuart_stop_rx,
+-    .startup        = lingsi_vuart_startup,
+-    .shutdown       = lingsi_vuart_shutdown,
+-    .set_termios    = lingsi_vuart_set_termios,
+-    .type           = lingsi_vuart_type,
+-    .config_port    = lingsi_vuart_config_port,
++    .tx_empty = lingsi_vuart_tx_empty,
++    .get_mctrl = lingsi_vuart_get_mctrl,
++    .set_mctrl = lingsi_vuart_set_mctrl,
++    .start_tx = lingsi_vuart_start_tx,
++    .stop_tx = lingsi_vuart_stop_tx,
++    .stop_rx = lingsi_vuart_stop_rx,
++    .startup = lingsi_vuart_startup,
++    .shutdown = lingsi_vuart_shutdown,
++    .set_termios = lingsi_vuart_set_termios,
++    .type = lingsi_vuart_type,
++    .config_port = lingsi_vuart_config_port,
+ };
+ 
+-static int lingsi_vuart_probe(struct platform_device *pdev)
++int lingsi_vuart_port_add(struct lingsi_vuart *vuart, struct device *dev, int id)
+ {
+-    struct device *dev = &pdev->dev;
+-    struct platform_device *parent_pdev;
+-    struct lingsi_espi_lpc_struct *espi_lpc;
+-    struct lingsi_vuart *priv;
+-    struct device_node *parent = of_get_parent(dev->of_node);
+-    int rc;
+-    if(!parent)
+-    {
+-        dev_err(dev, "cannot get parent node\n");
+-        return -ENODEV;
+-    }
+-    parent_pdev = of_find_device_by_node(parent);
+-    if(!parent_pdev)
+-    {
+-        dev_err(dev, "cannot get parent device\n");
+-        return -ENODEV;
+-    }
+-    espi_lpc = platform_get_drvdata(parent_pdev);
+-    if(!espi_lpc)
+-    {
+-        dev_err(dev, "espi lpc not inited\n");
+-        return -EPROBE_DEFER;
+-    }
+-    priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+-    if (!priv){
+-           dev_err(dev, "cannot alloc lingsi_host_dev mem\n");
+-        return -ENOMEM;
+-    }
+-    priv->parent = espi_lpc;
+-
+-    rc = of_property_read_u32_array(pdev->dev.of_node, "host_reg", (u32 *)&priv->host_reg, 2);
+-    if(rc<0)
+-    {
+-        dev_err(dev, "no valid 'host_reg' configured\n");
+-        return rc;
+-    }
+-    rc = of_property_read_u32_array(pdev->dev.of_node, "upstream_irq", (u32 *)&priv->up_irq, 2);
+-    if(rc<0)
+-    {
+-        dev_err(dev, "no valid 'upstream_irq' configured\n");
+-        return rc;
+-    }
+-    espi_lpc_add_ioport(espi_lpc,&priv->ioport[0],vuart_reg0_read,
+-            vuart_reg0_write,priv->host_reg.base,priv);
+-    espi_lpc_add_ioport(espi_lpc,&priv->ioport[1],vuart_reg1_read,
+-            vuart_reg1_write,priv->host_reg.base+1,priv);
+-    espi_lpc_add_ioport(espi_lpc,&priv->ioport[2],vuart_reg2_read,
+-            vuart_reg2_write,priv->host_reg.base+2,priv);
+-    espi_lpc_add_ioport(espi_lpc,&priv->ioport[3],vuart_reg3_read,
+-            vuart_reg3_write,priv->host_reg.base+3,priv);
+-    espi_lpc_add_ioport(espi_lpc,&priv->ioport[4],vuart_reg4_read,
+-            vuart_reg4_write,priv->host_reg.base+4,priv);
+-    espi_lpc_add_ioport(espi_lpc,&priv->ioport[5],vuart_reg5_read,
+-            vuart_reg5_write,priv->host_reg.base+5,priv);
+-    espi_lpc_add_ioport(espi_lpc,&priv->ioport[6],vuart_reg6_read,
+-            vuart_reg6_write,priv->host_reg.base+6,priv);
+-    espi_lpc_add_ioport(espi_lpc,&priv->ioport[7],vuart_reg7_read,
+-            vuart_reg7_write,priv->host_reg.base+7,priv);
+-
+-    pdev->id = of_alias_get_id(pdev->dev.of_node, "vuart");
+-    if (pdev->id < 0 || pdev->id >= LS_VUART_NR_UARTS) {
+-        dev_err(&pdev->dev, "id %d out of range\n", pdev->id);
++    if (id >= LINGSI_VUART_NR_UARTS) {
+         return -EINVAL;
+     }
+-    priv->uartp.dev = dev;
+-    priv->uartp.line = pdev->id;
+-    priv->uartp.iotype = UPIO_MEM;
+-    priv->uartp.ops = &lingsi_vuart_ops;
+-    priv->uartp.flags = UPF_BOOT_AUTOCONF;
+-    priv->uartp.type = PORT_UNKNOWN;
+-
+-    rc = uart_add_one_port(&lingsi_vuart_driver,&priv->uartp);
+-    if(rc)
+-    {
+-        dev_err(dev, "lingsi_vuart uart_add_one_port() failed; err=%i\n", rc);
+-        return rc;
+-    }
+-
+-    platform_set_drvdata(pdev,priv);
+-    return 0;
++    vuart->port.dev = dev;
++    vuart->port.line = id;
++    vuart->port.iotype = UPIO_MEM;
++    vuart->port.ops = &lingsi_vuart_ops;
++    vuart->port.flags = UPF_BOOT_AUTOCONF;
++    vuart->port.type = PORT_UNKNOWN;
++    return uart_add_one_port(&lingsi_vuart_driver, &vuart->port);
+ }
++EXPORT_SYMBOL(lingsi_vuart_port_add);
+ 
+-static int lingsi_vuart_remove(struct platform_device *pdev)
++void lingsi_vuart_port_remove(struct lingsi_vuart *vuart)
+ {
+-    int i;
+-    struct lingsi_vuart *priv = platform_get_drvdata(pdev);
+-    //uart_unregister_driver(&lingsi_vuart_driver);
+-    for(i=0;i<8;++i)
+-    {
+-        espi_lpc_remove_ioport(&priv->ioport[i]);
+-    }
+-    uart_remove_one_port(&lingsi_vuart_driver, &priv->uartp);
+-
+-    return 0;
++    uart_remove_one_port(&lingsi_vuart_driver, &vuart->port);
+ }
+-
+-static const struct of_device_id lingsi_vuart_match[] = {
+-    { .compatible = "lingsi-vuart" },
+-    { }
+-};
+-MODULE_DEVICE_TABLE(of, lingsi_vuart_match);
+-
+-static struct platform_driver lingsi_vuart_platform_driver = {
+-    .driver = {
+-        .name        = DEVICE_NAME,
+-        .of_match_table    = lingsi_vuart_match,
+-    },
+-    .probe    = lingsi_vuart_probe,
+-    .remove   = lingsi_vuart_remove,
+-};
++EXPORT_SYMBOL(lingsi_vuart_port_remove);
+ 
+ static int __init lingsi_vuart_init(void)
+ {
+-    int ret;
+-
+-    ret = uart_register_driver(&lingsi_vuart_driver);
+-    if (ret)
+-        return ret;
+-
+-    ret = platform_driver_register(&lingsi_vuart_platform_driver);
+-    if (ret)
+-        uart_unregister_driver(&lingsi_vuart_driver);
+-
+-    return ret;
++    return uart_register_driver(&lingsi_vuart_driver);
+ }
+ 
+ static void __exit lingsi_vuart_exit(void)
+ {
+-    platform_driver_unregister(&lingsi_vuart_platform_driver);
+     uart_unregister_driver(&lingsi_vuart_driver);
+ }
+ 
+ module_init(lingsi_vuart_init);
+ module_exit(lingsi_vuart_exit);
+ 
+-MODULE_LICENSE("GPL");
++MODULE_LICENSE("GPL");
+\ No newline at end of file
+diff --git a/drivers/char/ipmi/lingsi/lingsi_vuart.h b/drivers/char/ipmi/lingsi/lingsi_vuart.h
+new file mode 100644
+index 000000000000..c27669db6ecb
+--- /dev/null
++++ b/drivers/char/ipmi/lingsi/lingsi_vuart.h
+@@ -0,0 +1,15 @@
++#ifndef LINGSI_VUART_H
++#define LINGSI_VUART_H
++#include <linux/serial_core.h>
++
++struct lingsi_vuart {
++    struct uart_port port;
++    bool local_enabled;
++};
++bool lingsi_vuart_local_tx_empty(struct lingsi_vuart *vuart);
++u8 lingsi_vuart_get_tx_char(struct lingsi_vuart *vuart);
++void lingsi_vuart_char_rx_handle(struct lingsi_vuart *vuart, u8 val);
++int lingsi_vuart_port_add(struct lingsi_vuart *vuart, struct device *dev, int id);
++void lingsi_vuart_port_remove(struct lingsi_vuart *vuart);
++
++#endif
+-- 
+2.39.2
+

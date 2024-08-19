@@ -1,0 +1,16 @@
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
+SRC_URI += " file://test_systemd.sh \
+             file://test_systemd.service \
+           "
+
+do_install:append() {
+    install -d ${D}${systemd_unitdir}/system
+    install -m 0644 ${WORKDIR}/test_systemd.service ${D}${systemd_unitdir}/system/
+    
+    install -d ${D}/${bindir}
+    install -m 0755 ${WORKDIR}/test_systemd.sh ${D}/${bindir}
+}
+
+SYSTEMD_SERVICE:${PN} += "test_systemd.service"
+
+FILES:${PN} += " ${bindir}/test_systemd.sh {systemd_unitdir}/system/test_systemd.service"

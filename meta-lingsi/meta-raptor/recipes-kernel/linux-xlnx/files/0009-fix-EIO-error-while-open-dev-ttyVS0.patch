@@ -1,0 +1,27 @@
+From ec8af0fc51d2dd7c057cec2bd44a041d6e77878b Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Tue, 30 Jul 2024 15:49:09 +0800
+Subject: [PATCH 9/9] fix -EIO error while open /dev/ttyVS0
+
+---
+Upstream-Status: Pending
+
+ drivers/char/ipmi/lingsi/lingsi_vuart.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/char/ipmi/lingsi/lingsi_vuart.c b/drivers/char/ipmi/lingsi/lingsi_vuart.c
+index 593cdc0544c8..c9f00e4e8813 100644
+--- a/drivers/char/ipmi/lingsi/lingsi_vuart.c
++++ b/drivers/char/ipmi/lingsi/lingsi_vuart.c
+@@ -129,7 +129,7 @@ int lingsi_vuart_port_add(struct lingsi_vuart *vuart, struct device *dev, int id
+     vuart->port.iotype = UPIO_MEM;
+     vuart->port.ops = &lingsi_vuart_ops;
+     vuart->port.flags = UPF_BOOT_AUTOCONF;
+-    vuart->port.type = PORT_UNKNOWN;
++    vuart->port.type = PORT_16550A;
+     return uart_add_one_port(&lingsi_vuart_driver, &vuart->port);
+ }
+ EXPORT_SYMBOL(lingsi_vuart_port_add);
+-- 
+2.39.2
+

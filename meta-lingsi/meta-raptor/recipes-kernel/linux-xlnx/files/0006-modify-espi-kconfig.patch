@@ -1,0 +1,84 @@
+From ff2778590622cb2589cba277aa267d9d36b88e80 Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Thu, 25 Jul 2024 18:02:42 +0800
+Subject: [PATCH 6/6] modify espi kconfig
+
+---
+Upstream-Status: Pending
+
+ drivers/char/ipmi/lingsi/Kconfig                  | 14 +++++++-------
+ drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c |  4 +++-
+ 2 files changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/char/ipmi/lingsi/Kconfig b/drivers/char/ipmi/lingsi/Kconfig
+index 63b6c3f23e97..12d2049f7c67 100644
+--- a/drivers/char/ipmi/lingsi/Kconfig
++++ b/drivers/char/ipmi/lingsi/Kconfig
+@@ -2,19 +2,19 @@
+ if ARCH_LINGSI || COMPILE_TEST
+ 
+ config LINGSI_ESPI
+-    bool "LINGSI_ESPI"
++    tristate "LINGSI_ESPI"
+     help
+       TBD
+ 
+ config LINGSI_LPC
+-    bool "LINGSI_LPC"
++    tristate "LINGSI_LPC"
+     help
+       TBD
+ 
+ config LINGSI_KCS_IPMI_BMC
+     select IPMI_KCS_BMC
+     depends on LINGSI_ESPI || LINGSI_LPC
+-    bool "LS KCS IPMI BMC driver"
++    tristate "LS KCS IPMI BMC driver"
+     help
+       Provides a driver for the KCS (Keyboard Controller Style) IPMI
+       interface found on LS SOCs.
+@@ -26,25 +26,25 @@ config LINGSI_KCS_IPMI_BMC
+       will be called LINGSI_kcs.
+ 
+ config LINGSI_MMBI_IPMI_BMC
+-    bool "LINGSI_MMBI_IPMI_BMC"
++    tristate "LINGSI_MMBI_IPMI_BMC"
+     depends on LINGSI_ESPI || LINGSI_LPC
+     help
+       TBD
+ 
+ config LINGSI_SIO_BMC
+-    bool "LINGSI_SIO_BMC"
++    tristate "LINGSI_SIO_BMC"
+     depends on LINGSI_ESPI || LINGSI_LPC
+     help
+       TBD
+ 
+ config LINGSI_HOST_DEV_BMC
+-    bool "LINGSI_HOST_DEV_BMC"
++    tristate "LINGSI_HOST_DEV_BMC"
+     depends on LINGSI_ESPI || LINGSI_LPC
+     help
+       TBD
+ 
+ config LINGSI_VUART_BMC
+-    bool "LINGSI_VUART_BMC"
++    tristate "LINGSI_VUART_BMC"
+     depends on LINGSI_ESPI || LINGSI_LPC
+     help
+       TBD
+diff --git a/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c b/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c
+index 259cb0e806ca..638298d27d2c 100644
+--- a/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c
++++ b/drivers/char/ipmi/lingsi/lingsi_espi_lpc_common.c
+@@ -1,4 +1,6 @@
+-#include <linux/module.h>#include <linux/init.h>#include "lingsi_espi_lpc_common.h"
++#include <linux/module.h>
++#include <linux/init.h>
++#include "lingsi_espi_lpc_common.h"
+ 
+ void espi_lpc_add_ioport(struct lingsi_espi_lpc_struct *peri, struct lingsi_peri_ioport *ioport, void (*io_read)(struct lingsi_peri_ioport *, u8, void *), void (*io_write)(struct lingsi_peri_ioport *, u8, u8 *), u16 addr, void *ctx)
+ {
+-- 
+2.39.2
+

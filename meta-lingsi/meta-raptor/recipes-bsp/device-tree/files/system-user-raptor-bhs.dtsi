@@ -1,0 +1,689 @@
+#include "irq.h"
+#include "gpio.h"
+#include "lingsi-pinfunc.h"
+
+/ {
+    usb_phy0: phy@e0002000 {
+        compatible = "ulpi-phy";
+        #phy-cells = <0>;
+        reg = <0xe0002000 0x1000>;
+        view-port = <0x0170>;
+        drv-vbus;
+    };
+
+    axi {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        interrupt-parent = <&intc>;
+
+        sysc_awo: sysc_awo@4000a000 {
+            compatible = "lingsi,sysc_awo", "syscon", "simple-mfd";
+            reg = <0x4000a000 0x60>;
+        };
+
+        sysc_per: sysc_per@4008d000 {
+            compatible = "lingsi,sysc_per", "syscon", "simple-mfd";
+            reg = <0x4008d000 0x400>;
+        };
+
+        video: video@80000000 {
+            compatible = "lingsi,video-engine";
+            status = "disabled";
+            dmas = <&dmac_s 0>;
+            dma-names = "gdma";
+            vram = /bits/ 64 <0x80000000>;
+        };
+
+        peri_intc: interrupt-controller@40009000 {
+            compatible = "lingsi,peri-intc";
+            interrupt-parent = <&intc>;
+            interrupt-controller;
+            #interrupt-cells = <1>;
+            reg = <0x40009000 0x1000>;
+            interrupts = <0 29 4>;
+        };
+
+        exti_intc: interrupt-controller@4000a180 {
+            compatible = "lingsi,exti-intc";
+            interrupt-controller;
+            #interrupt-cells = <2>;
+            reg = <0x4000a180 0x80>;
+            interrupt-parent = <&peri_intc>;
+            interrupts = <62>;
+        };
+
+        lspinctrl: lspinctrl@4000a060 {
+            #address-cells = <1>;
+            #size-cells = <1>;
+            compatible = "lingsi,pinctrl-raptor";
+            ranges = <0 0x4000a060 0x1000>;
+            interrupt-parent = <&exti_intc>;
+            pins-are-numbered;
+
+            gpioa: gpio@60 {
+                gpio-controller;
+                #gpio-cells = <2>;
+                reg = <0x00 0x20>;
+                interrupt-controller;
+                #interrupt-cells = <2>;
+                lingsi,bank-name = "GPIOA";
+                ngpios = <16>;
+                gpio-ranges = <&lspinctrl 0 0 16>;
+                gpio-line-names = "PA00", "PA01", "PA02", "PA03",
+                                "PA04", "PA05", "PA06", "PA07",
+                                "PA08", "PA09", "PA10", "PA11",
+                                "PA12", "PA13", "PA14", "PA15";
+            };
+
+            gpiob: gpio@80 {
+                gpio-controller;
+                #gpio-cells = <2>;
+                reg = <0x20 0x20>;
+                interrupt-controller;
+                #interrupt-cells = <2>;
+                lingsi,bank-name = "GPIOB";
+                ngpios = <16>;
+                gpio-ranges = <&lspinctrl 0 16 16>;
+                gpio-line-names = "FM_BMC_PWRBTN_OUT_R_N", "POWER_BUTTON", "PB02", "PB03",
+                                "PB04", "PB05", "PB06", "PB07",
+                                "PB08", "PB09", "PB10", "PB11",
+                                "PB12", "PB13", "PB14", "PB15";
+            };
+
+            gpioc: gpio@a0 {
+                gpio-controller;
+                #gpio-cells = <2>;
+                reg = <0x40 0x20>;
+                interrupt-controller;
+                #interrupt-cells = <2>;
+                lingsi,bank-name = "GPIOC";
+                ngpios = <16>;
+                gpio-ranges = <&lspinctrl 0 32 16>;
+                gpio-line-names = "PC00", "PC01", "PC02", "PC03",
+                                "PC04", "PC05", "PC06", "PC07",
+                                "PC08", "PC09", "PC10", "PC11",
+                                "PC12", "PC13", "PC14", "PC15";
+            };
+
+            gpiod: gpio@c0 {
+                gpio-controller;
+                #gpio-cells = <2>;
+                reg = <0x60 0x20>;
+                interrupt-controller;
+                #interrupt-cells = <2>;
+                lingsi,bank-name = "GPIOD";
+                ngpios = <16>;
+                gpio-ranges = <&lspinctrl 0 48 16>;
+                gpio-line-names = "PD00", "PD01", "PD02", "PD03",
+                                "PD04", "PD05", "PD06", "PD07",
+                                "PD08", "PD09", "PD10", "PD11",
+                                "PD12", "PD13", "PD14", "PD15";
+            };
+
+            gpioe: gpio@e0 {
+                gpio-controller;
+                #gpio-cells = <2>;
+                reg = <0x80 0x20>;
+                interrupt-controller;
+                #interrupt-cells = <2>;
+                lingsi,bank-name = "GPIOE";
+                ngpios = <16>;
+                gpio-ranges = <&lspinctrl 0 64 16>;
+                gpio-line-names = "PE00", "PE01", "PE02", "PE03",
+                                "PE04", "PE05", "PE06", "PE07",
+                                "PE08", "PE09", "PE10", "PE11",
+                                "PE12", "PE13", "PE14", "PE15";
+            };
+
+            gpiof: gpio@100 {
+                gpio-controller;
+                #gpio-cells = <2>;
+                reg = <0xa0 0x20>;
+                interrupt-controller;
+                #interrupt-cells = <2>;
+                lingsi,bank-name = "GPIOF";
+                ngpios = <16>;
+                gpio-ranges = <&lspinctrl 0 80 16>;
+                gpio-line-names = "PF00", "PF01", "PF02", "PF03",
+                                "PF04", "PF05", "PF06", "PF07",
+                                "PF08", "PF09", "PF10", "PF11",
+                                "PF12", "PF13", "PF14", "PF15";
+            };
+
+            gpiog: gpio@120 {
+                gpio-controller;
+                #gpio-cells = <2>;
+                reg = <0xc0 0x20>;
+                interrupt-controller;
+                #interrupt-cells = <2>;
+                lingsi,bank-name = "GPIOG";
+                ngpios = <16>;
+                gpio-ranges = <&lspinctrl 0 96 16>;
+                gpio-line-names = "PG00", "PG01", "PG02", "PG03",
+                                "PG04", "PG05", "PG06", "PG07",
+                                "PG08", "PG09", "PG10", "PG11",
+                                "PG12", "PG13", "PG14", "PG15";
+            };
+
+            gpioh: gpio@140 {
+                gpio-controller;
+                #gpio-cells = <2>;
+                reg = <0xe0 0x20>;
+                interrupt-controller;
+                #interrupt-cells = <2>;
+                lingsi,bank-name = "GPIOH";
+                ngpios = <16>;
+                gpio-ranges = <&lspinctrl 0 112 16>;
+                gpio-line-names = "PH00", "PH01", "PH02", "PERSTN",
+                                "PH04", "PH05", "PH06", "PH07",
+                                "PH08", "POST_COMPLETE", "SIO_POWER_GOOD", "PS_PWROK",
+                                "PH12", "PH13", "PH14", "PH15";
+                                /* POST_COMPLETE is fake */
+            };
+
+            dw_i2c0_pins: dw_i2c0_pins-0 {
+                pins {
+                    pinmux = <LINGSI_PINMUX('A', 2, IIC1_SCL)>,
+                            <LINGSI_PINMUX('A', 1, IIC1_SDA)>;
+                };
+            };
+
+            dw_uart0_pins: dw_uart0-0 {
+                pins {
+                    pinmux = <LINGSI_PINMUX('A', 6, DWUART1_RXD)>,
+                            <LINGSI_PINMUX('A', 5, DWUART1_TXD)>;
+                };
+            };
+
+            dw_uart1_pins: dw_uart1-0 {
+                pins {
+                    pinmux = <LINGSI_PINMUX('B', 15, DWUART2_RXD)>,
+                            <LINGSI_PINMUX('G', 14, DWUART2_TXD)>;
+                };
+            };
+
+            vuart0_pins: vuart0-0 {
+                pins {
+                    pinmux = <LINGSI_PINMUX('A', 4, DWUART2_RXD)>,
+                            <LINGSI_PINMUX('A', 3, DWUART2_TXD)>;
+                };
+            };
+
+            dw_spi_pins: dw_spi-0 {
+                pins {
+                    pinmux = <LINGSI_PINMUX('C', 0, SPI1_SCK)>,
+                            <LINGSI_PINMUX('C', 1, SPI1_NSS0)>,
+                            <LINGSI_PINMUX('C', 2, SPI1_NSS1)>,
+                            <LINGSI_PINMUX('C', 3, SPI1_DQ0)>,
+                            <LINGSI_PINMUX('C', 4, SPI1_DQ1)>,
+                            <LINGSI_PINMUX('C', 5, SPI1_DQ2)>;
+                };
+            };
+
+            pinctrl_sgpm_default: sgpm {
+                pins {
+                    pinmux = <LINGSI_PINMUX('A', 12, SGPMLD)>,
+                            <LINGSI_PINMUX('A', 11, SGPMO)>,
+                            <LINGSI_PINMUX('H', 0, SGPMCK)>,
+                            <LINGSI_PINMUX('E', 15, SGPMI)>;
+                };
+            };
+
+            // Just writing to see
+            // espi_pins: espi {
+            //     pins {
+            //         pinmux = <LINGSI_PINMUX('H', 2, RST)>,
+            //                 <LINGSI_PINMUX('D', 13, D1)>,
+            //                 <LINGSI_PINMUX('D', 14, D0)>,
+            //                 <LINGSI_PINMUX('D', 9, ALERT)>,
+            //                 <LINGSI_PINMUX('D', 10, CS)>,
+            //                 <LINGSI_PINMUX('D', 11, D3)>,
+            //                 <LINGSI_PINMUX('D', 12, D2)>,
+            //                 <LINGSI_PINMUX('D', 15, CLK)>;
+            //     };
+            // };
+        };
+
+        dummy_apb: apb-clock {
+            compatible = "fixed-clock";
+            clock-frequency = <64000000>;
+            clock-output-names = "dummy_apb";
+            #clock-cells = <0>;
+        };
+
+        dw_i2c0: dw_i2c0@40083000 {
+            compatible = "snps,designware-i2c";
+            reg = <0x40083000 0x100>;
+            interrupt-parent = <&peri_intc>;
+            interrupts = <29>;
+            clocks = <&dummy_apb>;
+            clock-frequency = <100000>;
+            pinctrl-names = "default";
+            pinctrl-0 = <&dw_i2c0_pins>;
+            status = "disabled";
+        };
+
+        sgpiom: sgpiom@40083c00 {
+            #gpio-cells = <2>;
+            gpio-controller;
+            compatible = "lingsi,sgpiom";
+            reg = <0x40083c00 0x100>;
+            interrupt-parent = <&peri_intc>;
+            interrupts = <32>;
+            clocks = <&dummy_apb>;
+            interrupt-controller;
+            bus-frequency = <115200>;
+            pinctrl-names = "default";
+            pinctrl-0 = <&pinctrl_sgpm_default>;
+            status = "disabled";
+        };
+
+        dw_uart0: dw_serial@40085c00 {
+            compatible = "snps,dw-apb-uart";
+            reg = <0x40085c00 0x400>;
+            interrupt-parent = <&peri_intc>;
+            interrupts = <38>;
+            clocks = <&dummy_apb>;
+            clock-names = "baudclk";
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            clock-frequency = <64000000>;
+            current-speed = <115200>;
+            pinctrl-names = "default";
+            pinctrl-0 = <&dw_uart0_pins>;
+            status = "disabled";
+        };
+
+        dw_uart1: dw_serial@40086000 {
+            compatible = "snps,dw-apb-uart";
+            reg = <0x40086000 0x400>;
+            interrupt-parent = <&peri_intc>;
+            interrupts = <39>;
+            clocks = <&dummy_apb>;
+            clock-names = "baudclk";
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            current-speed = <115200>;
+            pinctrl-names = "default";
+            pinctrl-0 = <&dw_uart1_pins>;
+            status = "disabled";
+        };
+
+        espi: espi@40004000 {
+            compatible = "lingsi,espi", "simple-mfd";
+            reg = <0x40004000 0x1000>;
+            #address-cells = <1>;
+            #size-cells = <1>;
+            ranges;
+
+            interrupt-parent = <&peri_intc>;
+            interrupts = <11>;
+            status = "disabled";
+
+            kcs0: kcs@0 {
+                compatible = "lingsi,kcs-bmc";
+                kcs_chan = <0x3>;
+                kcs_addr = <0xca2>;
+                status = "disabled";
+            };
+
+            kcs1: kcs@1 {
+                compatible = "lingsi,kcs-bmc";
+                kcs_chan = <0x4>;
+                kcs_addr = <0xca4>;
+                status = "disabled";
+            };
+
+            host_dev0: host_dev@0 {
+                compatible = "lingsi,host-dev";
+                reg = <0x40086000 0x400>;
+                interrupt-parent = <&peri_intc>;
+                interrupts = <39>;
+                host_reg = <0x3f8 8>;
+                upstream_irq = <0x4 IRQ_TYPE_LEVEL_HIGH>;
+                pinctrl-names = "default";
+                pinctrl-0 = <&vuart0_pins>;
+                status = "disabled";
+            };
+
+            vuart0: vuart@0 {
+                compatible = "lingsi,vuart";
+                host_reg = <0x4f8 8>;
+                upstream_irq = <0x4 IRQ_TYPE_LEVEL_HIGH>;
+                status = "disabled";
+            };
+
+            mmbi: mmbi@0 {
+                compatible = "lingsi,mmbi";
+                host-addr = <0xf6810000>;
+                size-order = <0>;
+                status = "disabled";
+            };
+
+            sio: sio@0 {
+                compatible = "lingsi,sio";
+                status = "disabled";
+            };
+
+            // host_dev2: host_dev@2 {
+            //     compatible = "lingsi,host-dev";
+            //     host_reg = <0x5f8 8>;
+            //     upstream_irq = <0x4 IRQ_TYPE_LEVEL_HIGH>;
+            //     status = "disabled";
+            // };
+
+            // vuart2: vuart@2 {
+            //     compatible = "lingsi,vuart";
+            //     host_reg = <0x6f8 8>;
+            //     upstream_irq = <0x4 IRQ_TYPE_LEVEL_HIGH>;
+            //     status = "disabled";
+            // };
+        };
+    };
+
+    aliases {
+        /* runbmc ARM(PS) console */
+        serial0 = &uart0;
+        /* runbmc FPGA(PL) console */
+        dw_serial0 = &dw_uart0;
+        /* cpu sol console */
+        vuart0 = &vuart0;
+        ethernet0 = &gem0;
+        spi0 = &qspi;
+    };
+
+    chosen {
+        /* AX7450, AX7Z100, runbmc PS console */
+        bootargs = "console=ttyPS0,115200 earlycon root=/dev/ram0 rw rootfstype=ramfs log_buf_len=32M";
+        stdout-path = "serial0:115200n8";
+    };
+};
+
+&clkc {
+    fclk-enable = <0xf>;
+    ps-clk-frequency = <33333333>;
+};
+
+// ttyPS0
+// &uart0 {
+//     status = "disabled";
+// };
+
+// ttyPS1
+&uart1 {
+    status = "disabled";
+};
+
+&qspi {
+    is-dual = <1>;
+    num-cs = <2>;
+    spi-rx-bus-width = <4>;
+    spi-tx-bus-width = <4>;
+    spi-max-frequency = <40000000>;
+    flash0: flash@0 {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        reg = <0>, <1>;
+        parallel-memories = /bits/ 64 <0x2000000 0x2000000>; /* 32MB + 32MB */
+        m25p,fast-read;
+        spi-max-frequency = <40000000>;
+        compatible = "jedec,spi-nor";
+        partition@0 {
+            label = "qspi-boot";
+            reg = <0x00000000 0x1000000>;
+        };
+        partition@99 {
+            label = "qspi-flash";
+            reg = <0x00000000 0xffffffff>;
+        };
+    };
+};
+
+&gem0 {
+    /* phy-mode is avenue-city need */
+    // phy-mode = "rgmii";
+    // phy-mode = "rgmii-id";
+    /delete-property/phy-mode;
+    phy-handle = <&ethphy0>;
+    local-mac-address = [36 04 F6 A7 7F DF];
+
+    ethphy0: ethernet-phy@0 {
+        compatible = "ethernet-phy-ieee802.3-c22";
+        reg = <0>;
+    };
+};
+
+&gem1 {
+    local-mac-address = [36 04 F6 A7 7F EF];
+};
+
+&usb0 {
+    status = "okay";
+    // dr_mode = "otg";
+    dr_mode = "peripheral";
+    usb-phy = <&usb_phy0>;
+    pinctrl-names = "default";
+    pinctrl-0 = <&pinctrl_usb0_default>;
+};
+
+&gpio0 {
+    status = "disabled";
+};
+
+// &dmac_s {
+//        status = "okay";
+// };
+
+// &video {
+//     status = "okay";
+// };
+
+&dw_uart0 {
+    status = "okay";
+};
+
+// &dw_uart1 {
+//     status = "okay";
+// };
+
+&espi {
+    status = "okay";
+};
+
+&kcs0 {
+    status = "okay";
+};
+
+&kcs1 {
+    status = "okay";
+};
+
+// &host_dev0 {
+//     status = "okay";
+// };
+
+// &vuart0 {
+//     status = "okay";
+// };
+
+&mmbi {
+    status = "okay";
+};
+
+&sio {
+    status = "okay";
+};
+
+// &gpiob {
+//     fm_bmc_pwrbtn_out_r_n {
+//         gpio-hog;
+//         gpios = <0 GPIO_ACTIVE_HIGH>;
+//         drive-push-pull;
+//         output-high;
+//     };
+// };
+
+&dw_i2c0 {
+    status = "okay";
+
+    #address-cells = <1>;
+    #size-cells = <0>;
+
+    pca9535_0: pca9535@20 {
+        compatible = "nxp,pca9535";
+        status = "disabled";
+        //PA
+        reg = <0x20>;
+        label = "EX_IOA";
+        gpio-controller;
+        #gpio-cells = <2>;
+        interrupt-parent = <&gpioa>;
+        interrupts = <7 IRQ_TYPE_LEVEL_LOW>;
+        interrupt-controller;
+        #interrupt-cells = <2>;
+        gpio-line-names = "EX_PA00", "EX_PA01", "EX_PA02", "EX_PA03",
+                          "EX_PA04", "EX_PA05", "EX_PA06", "ID_BUTTON",
+                          "NMI_BUTTON", "EX_PA09", "EX_PA10", "EX_PA11",
+                          "EX_PA12", "EX_PA13", "EX_PA14", "EX_PA15";
+    };
+
+    pca9535_1: pca9535@21 {
+        compatible = "nxp,pca9535";
+        status = "disabled";
+        //PB
+        reg = <0x21>;
+        label = "EX_IOB";
+        gpio-controller;
+        #gpio-cells = <2>;
+        interrupt-parent = <&gpioa>;
+        interrupts = <8 IRQ_TYPE_LEVEL_LOW>;
+        // interrupts = <1 IRQ_TYPE_LEVEL_LOW>;
+        interrupt-controller;
+        #interrupt-cells = <2>;
+        gpio-line-names = "EX_PB00", "RESET_OUT", "EX_PB02", "EX_PB03",
+                          "EX_PB04", "EX_PB05", "EX_PB06", "EX_PB07",
+                          "EX_PB08", "SIO_S5", "EX_PB10", "EX_PB11",
+                          "EX_PB12", "EX_PB13", "EX_PB14", "EX_PB15";
+    };
+
+    pca9535_4: pca9535@24 {
+        compatible = "nxp,pca9535";
+        status = "disabled";
+        //PE
+        reg = <0x24>;
+        label = "EX_IOE";
+        gpio-controller;
+        #gpio-cells = <2>;
+        interrupt-parent = <&gpioe>;
+        interrupts = <5 IRQ_TYPE_LEVEL_LOW>;
+        interrupt-controller;
+        #interrupt-cells = <2>;
+        gpio-line-names = "EX_PE00", "EX_PE01", "EX_PE02", "EX_PE03",
+                          "EX_PE04", "EX_PE05", "EX_PE06", "EX_PE07",
+                          "EX_PE08", "SIO_ONCONTROL", "EX_PE10", "EX_PE11",
+                          "EX_PE12", "EX_PE13", "EX_PE14", "EX_PE15";
+    };
+
+    pca9535_6: pca9535@26 {
+        compatible = "nxp,pca9535";
+        status = "disabled";
+        //PG
+        reg = <0x26>;
+        label = "EX_IOG";
+        gpio-controller;
+        #gpio-cells = <2>;
+        interrupt-parent = <&gpioe>;
+        interrupts = <4 IRQ_TYPE_LEVEL_LOW>;
+        interrupt-controller;
+        #interrupt-cells = <2>;
+        gpio-line-names = "EX_PG00", "EX_PG01", "EX_PG02", "EX_PG03",
+                          "RESET_BUTTON", "EX_PG05", "NO_PIN", "NO_PIN",
+                          "NO_PIN", "NO_PIN", "NO_PIN", "NO_PIN",
+                          "NO_PIN", "NO_PIN", "NO_PIN", "NO_PIN";
+    };
+};
+
+&pca9535_0 {
+    status = "okay";
+};
+
+&pca9535_1 {
+    status = "okay";
+};
+
+&pca9535_4 {
+    status = "okay";
+};
+
+&pca9535_6 {
+    status = "okay";
+};
+
+&pinctrl0 {
+    pinctrl_usb0_default: usb0-default {
+        mux {
+            groups = "usb0_0_grp";
+            function = "usb0";
+        };
+
+        conf {
+            groups = "usb0_0_grp";
+            slew-rate = <0>;
+            power-source = <1>;
+        };
+
+        conf-rx {
+            pins = "MIO29", "MIO31", "MIO36";
+            bias-high-impedance;
+        };
+
+        conf-tx {
+            pins = "MIO28", "MIO30", "MIO32", "MIO33", "MIO34",
+                   "MIO35", "MIO37", "MIO38", "MIO39";
+            bias-disable;
+        };
+    };
+};
+
+&sgpiom {
+    status = "okay";
+    ngpios = <128>;
+    // ngpios = <256>;
+    bus-frequency = <2000000>;
+    // bus-frequency = <1000>;
+    gpio-line-names =
+    /* SGPIO input lines */
+    /*IOA0-IOA7*/  "CPU1_PRESENCE", "", "CPU1_THERMTRIP", "", "CPU1_VRHOT", "", "H_CPU0_MON_FAIL_LVC1_N", "", "CPU1_MEM_VRHOT", "", "CPU1_MEM_THERM_EVENT", "", "FM_CPU0_PROC_ID0", "", "FM_CPU0_PROC_ID1", "",
+    /*IOB0-IOB7*/  "CPU1_MISMATCH", "LED_CPU1_CH1_DIMM1_FAULT", "", "LED_CPU1_CH1_DIMM2_FAULT", "CPU2_PRESENCE", "LED_CPU1_CH2_DIMM1_FAULT", "CPU2_THERMTRIP", "LED_CPU1_CH2_DIMM2_FAULT", "CPU2_VRHOT", "LED_CPU1_CH3_DIMM1_FAULT", "H_CPU1_MON_FAIL_LVC1_N", "LED_CPU1_CH3_DIMM2_FAULT", "CPU2_MEM_VRHOT", "LED_CPU1_CH4_DIMM1_FAULT", "CPU2_MEM_THERM_EVENT", "LED_CPU1_CH4_DIMM2_FAULT",
+    /*IOC0-IOC7*/  "FM_CPU1_PROC_ID0", "LED_CPU1_CH5_DIMM1_FAULT", "FM_CPU1_PROC_ID1", "LED_CPU1_CH5_DIMM2_FAULT", "CPU2_MISMATCH", "LED_CPU1_CH6_DIMM1_FAULT", "", "LED_CPU1_CH6_DIMM2_FAULT", "", "LED_FAN1_FAULT", "", "LED_FAN2_FAULT", "", "LED_FAN3_FAULT", "", "LED_FAN4_FAULT",
+    /*IOD0-IOD7*/  "", "LED_FAN5_FAULT", "", "LED_FAN6_FAULT", "", "LED_FAN7_FAULT", "", "LED_FAN8_FAULT", "", "LED_CPU2_CH1_DIMM1_FAULT", "", "LED_CPU2_CH1_DIMM2_FAULT", "", "LED_CPU2_CH2_DIMM1_FAULT", "", "LED_CPU2_CH2_DIMM2_FAULT",
+    /*IOE0-IOE7*/  "", "LED_CPU2_CH3_DIMM1_FAULT", "", "LED_CPU2_CH3_DIMM2_FAULT", "", "LED_CPU2_CH4_DIMM1_FAULT", "", "LED_CPU2_CH4_DIMM2_FAULT", "", "LED_CPU2_CH5_DIMM1_FAULT", "", "LED_CPU2_CH5_DIMM2_FAULT", "", "LED_CPU2_CH6_DIMM1_FAULT", "CPU1_CPLD_CRC_ERROR", "LED_CPU2_CH6_DIMM2_FAULT",
+    /*IOF0-IOF7*/  "CPU2_CPLD_CRC_ERROR", "", "CPU1_CATERR_IERR", "", "CPU1_CATERR_MCERR", "", "CPU2_CATERR_IERR", "", "CPU2_CATERR_MCERR", "", "", "", "", "", "", "",
+    /*IOG0-IOG7*/  "MAIN_PLD_MINOR_REV_BIT0", "", "MAIN_PLD_MINOR_REV_BIT1", "", "MAIN_PLD_MINOR_REV_BIT2", "", "MAIN_PLD_MINOR_REV_BIT3", "", "MAIN_PLD_MAJOR_REV_BIT0", "", "MAIN_PLD_MAJOR_REV_BIT1", "", "MAIN_PLD_MAJOR_REV_BIT2", "", "MAIN_PLD_MAJOR_REV_BIT3", "",
+    /*IOH0-IOH7*/  "", "", "WMEMX_PWR_FLT", "", "WCPUX_MEM_PWR_FLT", "", "PWRGD_P3V3_FF", "", "WPSU_PWR_FLT", "", "", "", "", "", "WPCH_PWR_FLT", "",
+    /*IOI0-IOI7*/  "FM_CPU0_PKGID0", "LED_CPU1_CH7_DIMM1_FAULT", "FM_CPU0_PKGID1", "LED_CPU1_CH7_DIMM2_FAULT", "FM_CPU0_PKGID2", "LED_CPU1_CH8_DIMM1_FAULT", "H_CPU0_MEMTRIP_LVC1_N", "LED_CPU1_CH8_DIMM2_FAULT", "FM_CPU1_PKGID0", "LED_CPU2_CH7_DIMM1_FAULT", "FM_CPU1_PKGID1", "LED_CPU2_CH7_DIMM2_FAULT", "FM_CPU1_PKGID2", "LED_CPU2_CH8_DIMM1_FAULT", "H_CPU1_MEMTRIP_LVC1_N", "LED_CPU2_CH8_DIMM2_FAULT",
+    /*IOJ0-IOJ7*/  "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    /*IOK0-IOK7*/  "FM_BOARD_REV_ID0", "LED_CPU0_CH9_DIMM1_FAULT", "FM_BOARD_REV_ID1", "LED_CPU0_CH9_DIMM2_FAULT", "FM_BOARD_REV_ID2", "LED_CPU0_CH10_DIMM1_FAULT", "FM_BOARD_SKU_ID0", "LED_CPU0_CH10_DIMM2_FAULT", "FM_BOARD_SKU_ID1", "LED_CPU0_CH11_DIMM1_FAULT", "FM_BOARD_SKU_ID2", "LED_CPU0_CH11_DIMM2_FAULT", "FM_BOARD_SKU_ID3", "LED_CPU0_CH12_DIMM1_FAULT", "FM_BOARD_SKU_ID4", "LED_CPU0_CH12_DIMM2_FAULT",
+    /*IOL0-IOL7*/  "FM_BOARD_SKU_ID5", "LED_CPU1_CH9_DIMM1_FAULT", "FM_BMC_VAL_EN", "LED_CPU1_CH9_DIMM2_FAULT", "FM_SERIAL_BOOT", "LED_CPU1_CH10_DIMM1_FAULT", "", "LED_CPU1_CH10_DIMM2_FAULT", "S0_PWROK", "LED_CPU1_CH11_DIMM1_FAULT", "", "LED_CPU1_CH11_DIMM2_FAULT", "", "LED_CPU1_CH12_DIMM1_FAULT", "", "LED_CPU1_CH12_DIMM1_FAULT",
+    /*IOM0-IOM7*/  "", "FM_SURPRISE_RESET_N", "", "FM_CPU1_INTR_CLK_CONFDONE_N", "", "FM_GLOBAL_RESET_N", "FM_1200VA_OC", "BMC_BOOT_DONE", "", "IRQ_BMC_CPU_NMI_P0", "", "IRQ_BMC_CPU_NMI_P1", "", "", "", "",
+    /*ION0-ION7*/  "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    /*IOO0-IOO7*/  "R1S_PRESENCE", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    /*IOP0-IOP7*/  "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "";
+
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+    // "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "";
+};

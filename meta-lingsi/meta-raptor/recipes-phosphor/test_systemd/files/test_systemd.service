@@ -1,0 +1,11 @@
+[Unit]
+Description=Run tree /dev after system boot
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/test_systemd.sh
+
+[Install]
+# WantedBy=basic.target
+WantedBy=multi-user.target

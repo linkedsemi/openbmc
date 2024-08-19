@@ -1,0 +1,1373 @@
+From 192cd3221f963828406e5792478f017e17ae1f1b Mon Sep 17 00:00:00 2001
+From: Hunter Liu <htliu@linkedsemi.com>
+Date: Mon, 15 Jul 2024 10:49:15 +0800
+Subject: [PATCH] add lingsi bsp
+
+---
+Upstream-Status: Pending
+
+ board/xilinx/zynq/board.c |   56 ++
+ board/xilinx/zynq/iomux.c | 1275 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 1331 insertions(+)
+ create mode 100644 board/xilinx/zynq/iomux.c
+
+diff --git a/board/xilinx/zynq/board.c b/board/xilinx/zynq/board.c
+index 17ee541bd8..1a49586480 100644
+--- a/board/xilinx/zynq/board.c
++++ b/board/xilinx/zynq/board.c
+@@ -19,8 +19,10 @@
+ #include <wdt.h>
+ #include <zynqpl.h>
+ #include <asm/global_data.h>
++#include <asm/io.h>
+ #include <asm/arch/hardware.h>
+ #include <asm/arch/sys_proto.h>
++#include <linux/delay.h>
+ #include "../common/board.h"
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+@@ -32,6 +34,60 @@ void board_debug_uart_init(void)
+ }
+ #endif
+ 
++#include "iomux.c"
++
++// volatile unsigned long long g_cnt = 60000;
++volatile unsigned long long g_cnt = 30000;
++// volatile unsigned long long g_cnt = 2500;
++void __attribute__((optimize(0))) phy_delay(void)
++{
++    while(g_cnt--);
++}
++
++int board_early_init_f(void)
++{
++	CLEAR_BIT(SYSC_AWO_BASE + AWO_PIN_SEL0, 0xfffffffe);
++	CLEAR_BIT(SYSC_AWO_BASE + AWO_PIN_SEL1, 0xffffffff);
++	CLEAR_BIT(SYSC_AWO_BASE + AWO_PIN_SEL2, 0xffffffff);
++	CLEAR_BIT(SYSC_AWO_BASE + AWO_PIN_SEL3, 0xffffffff);
++	CLEAR_BIT(SYSC_AWO_BASE + AWO_PIN_SEL4, 0xffffffff);
++
++	/* enable dw_i2c0 */
++	// pinmux_iic1_init(PA02, PA01);
++
++	/* BMC console */
++	// pinmux_dwuart1_init(PB15, PB03);
++
++	/* PDRGD */
++	io_cfg_input(PH11);
++	/* CPURST# */
++	io_cfg_input(PA13);
++	/* BMC_RESET# */
++	io_cfg_input(PC01);
++
++	/* BMC_PHY_RST_N */
++	io_cfg_opendrain(PA10);
++	io_cfg_output(PA10);
++
++	io_write_pin(PA10, 0);
++	phy_delay();
++	io_write_pin(PA10, 1);
++
++	/* BMC_FWSPI_CS_N */
++	io_cfg_output(PA02);
++	io_cfg_pushpull(PA02);
++	/* deassert */
++	io_write_pin(PA10, 1);
++
++	/* BMC console workaound */
++	pinmux_dwuart1_init(PH10, PD06);
++
++	pinmux_lpc_init();
++	pinmux_lpc_serirq_init();
++
++	return 0;
++}
++
+ int board_init(void)
+ {
+ 	if (IS_ENABLED(CONFIG_SPL_BUILD))
+diff --git a/board/xilinx/zynq/iomux.c b/board/xilinx/zynq/iomux.c
+new file mode 100644
+index 0000000000..cb1f1062a1
+--- /dev/null
++++ b/board/xilinx/zynq/iomux.c
+@@ -0,0 +1,1275 @@
++
++#define SYSC_AWO_BASE 0x4000A000
++#define SYSC_PER_BASE 0x4008D000
++#define SYSC_AWO_ESPI_EN 0x40
++#define SYSC_AWO_ESPI_ALERT_EN 0x80
++#define SYSC_AWO_LPC_EN 0x4000
++#define SYSC_AWO_LPC_SERIRQ_EN 0x8000
++
++#define SGPIOM_BASE  0x40083c00
++#define SGPIO_CTRL  0x140
++
++#define AWO_SLP_HLD_CTRL 0x4
++#define AWO_CRYPT_WORD 0x8
++#define AWO_CTRL 0xc
++#define AWO_RESERVED0 0x10
++#define AWO_DBG_RST_CTRL 0x24
++#define AWO_PD_AWO_CLKG_SRST 0x28
++#define AWO_PD_AWO_CLK_CTRL 0x2c
++#define AWO_PD_AWO_ANA0 0x34
++#define AWO_PD_AWO_ANA1 0x38
++#define AWO_PIN_SEL0 0x40
++#define AWO_PIN_SEL1 0x44
++#define AWO_PIN_SEL2 0x48
++#define AWO_PIN_SEL3 0x4c
++#define AWO_PIN_SEL4 0x50
++#define AWO_PIN_SEL5 0x54
++#define AWO_RESERVED3 0x58
++#define AWO_IO 0x60
++#define AWO_DBG_ACK 0x164
++#define AWO_ANA_STAT 0x168
++#define AWO_EFUSE_RDATA 0x16c
++#define AWO_EXTI_MSK 0x180
++#define AWO_EXTI_CLR 0x1a0
++#define AWO_EXTI_STT 0x1c0
++#define AWO_EXTI_RAW 0x1e0
++#define AWO_DMAC1_CH_SEL 0x200
++#define AWO_DMAC2_CH_SEL 0x208
++
++#define AWO_IO_GPIO_SIZE    0x20
++#define AWO_IO_GPIO_LOCK    0x00
++#define AWO_IO_GPIO_DOT     0x04
++#define AWO_IO_GPIO_PUPD    0x08
++#define AWO_IO_GPIO_IEN_OD  0x0c
++#define AWO_IO_GPIO_DS      0x10
++#define AWO_IO_GPIO_AE      0x14
++#define AWO_IO_GPIO_OE_FIR  0x18
++#define AWO_IO_GPIO_DIN     0x1c
++
++enum SYSC_AWO_REG_AWO_CTRL_FIELD
++{
++    SYSC_AWO_DBG_REQ_VLD_MASK = (int)0x1,
++    SYSC_AWO_DBG_REQ_VLD_POS = 0,
++    SYSC_AWO_CRYPT_EN_MASK = (int)0x80000000,
++    SYSC_AWO_CRYPT_EN_POS = 31,
++};
++
++enum SYSC_AWO_REG_DBG_RST_CTRL_FIELD
++{
++    SYSC_AWO_DBG_RST_STP_DLY_MASK = (int)0xf0,
++    SYSC_AWO_DBG_RST_STP_DLY_POS = 4,
++};
++
++enum SYSC_AWO_REG_PD_AWO_CLKG_SRST_FIELD
++{
++    SYSC_AWO_CLKG_SET_DIV_HBUS_MASK = (int)0x1,
++    SYSC_AWO_CLKG_SET_DIV_HBUS_POS = 0,
++    SYSC_AWO_CLKG_CLR_DIV_HBUS_MASK = (int)0x2,
++    SYSC_AWO_CLKG_CLR_DIV_HBUS_POS = 1,
++};
++
++enum SYSC_AWO_REG_PD_AWO_CLK_CTRL_FIELD
++{
++    SYSC_AWO_CLK_DIV_PARA_HBUS_M1_MASK = (int)0xf,
++    SYSC_AWO_CLK_DIV_PARA_HBUS_M1_POS = 0,
++    SYSC_AWO_CLK_SEL_HBUS_MASK = (int)0xf0,
++    SYSC_AWO_CLK_SEL_HBUS_POS = 4,
++    SYSC_AWO_CLK_SEL_HBUS_FLT_MASK = (int)0x300,
++    SYSC_AWO_CLK_SEL_HBUS_FLT_POS = 8,
++    SYSC_AWO_CLK_SEL_QSPI_FLT_MASK = (int)0xc00,
++    SYSC_AWO_CLK_SEL_QSPI_FLT_POS = 10,
++    SYSC_AWO_HBUS_FLT_CTRL_MASK = (int)0xf000,
++    SYSC_AWO_HBUS_FLT_CTRL_POS = 12,
++    SYSC_AWO_QSPI_FLT_CTRL_MASK = (int)0xf0000,
++    SYSC_AWO_QSPI_FLT_CTRL_POS = 16,
++    SYSC_AWO_HSE_DCT_EN_MASK = (int)0x100000,
++    SYSC_AWO_HSE_DCT_EN_POS = 20,
++    SYSC_AWO_CLK_PBUS1_DIV4_MASK = (int)0x800000,
++    SYSC_AWO_CLK_PBUS1_DIV4_POS = 23,
++    SYSC_AWO_CLK_SEL_QSPI_MASK = (int)0x7000000,
++    SYSC_AWO_CLK_SEL_QSPI_POS = 24,
++    SYSC_AWO_CLK_SEL_PBUS3_MASK = (int)0x30000000,
++    SYSC_AWO_CLK_SEL_PBUS3_POS = 28,
++    SYSC_AWO_CLK_SEL_PBUS4_MASK = (int)0xc0000000,
++    SYSC_AWO_CLK_SEL_PBUS4_POS = 30,
++};
++
++enum SYSC_AWO_REG_PD_AWO_ANA0_FIELD
++{
++    SYSC_AWO_DPLL_CTRL_MASK = (int)0xfff,
++    SYSC_AWO_DPLL_CTRL_POS = 0,
++};
++
++enum SYSC_AWO_REG_PD_AWO_ANA1_FIELD
++{
++    SYSC_AWO_CFG_HSICAL_MASK = (int)0x7fff,
++    SYSC_AWO_CFG_HSICAL_POS = 0,
++};
++
++enum SYSC_AWO_REG_PIN_SEL0_FIELD
++{
++    SYSC_AWO_SWD_EN_MASK = (int)0x1,
++    SYSC_AWO_SWD_EN_POS = 0,
++    SYSC_AWO_CCH_DBG_EN_MASK = (int)0x2,
++    SYSC_AWO_CCH_DBG_EN_POS = 1,
++    SYSC_AWO_CLK_HBUS_OUT_EN_MASK = (int)0x8,
++    SYSC_AWO_CLK_HBUS_OUT_EN_POS = 3,
++    SYSC_AWO_HSE_OUT_EN_MASK = (int)0x20,
++    SYSC_AWO_HSE_OUT_EN_POS = 5,
++    SYSC_AWO_ESPI_EN_MASK = (int)0x40,
++    SYSC_AWO_ESPI_EN_POS = 6,
++    SYSC_AWO_ESPI_ALERT_EN_MASK = (int)0x80,
++    SYSC_AWO_ESPI_ALERT_EN_POS = 7,
++    SYSC_AWO_QSPI_EN_MASK = (int)0x3f00,
++    SYSC_AWO_QSPI_EN_POS = 8,
++    SYSC_AWO_LPC_EN_MASK = (int)0x4000,
++    SYSC_AWO_LPC_EN_POS = 14,
++    SYSC_AWO_LPC_SERIRQ_EN_MASK = (int)0x8000,
++    SYSC_AWO_LPC_SERIRQ_EN_POS = 15,
++    SYSC_AWO_SPIS_EN_MASK = (int)0x10000,
++    SYSC_AWO_SPIS_EN_POS = 16,
++    SYSC_AWO_CLK_OUT_SEL_MASK = (int)0x30000000,
++    SYSC_AWO_CLK_OUT_SEL_POS = 28,
++};
++
++enum SYSC_AWO_REG_PIN_SEL1_FIELD
++{
++    SYSC_AWO_FUNC_IOA_EN_MASK = (int)0xffff,
++    SYSC_AWO_FUNC_IOA_EN_POS = 0,
++    SYSC_AWO_FUNC_IOB_EN_MASK = (int)0xffff0000,
++    SYSC_AWO_FUNC_IOB_EN_POS = 16,
++};
++
++enum SYSC_AWO_REG_PIN_SEL2_FIELD
++{
++    SYSC_AWO_FUNC_IOC_EN_MASK = (int)0xffff,
++    SYSC_AWO_FUNC_IOC_EN_POS = 0,
++    SYSC_AWO_FUNC_IOD_EN_MASK = (int)0xffff0000,
++    SYSC_AWO_FUNC_IOD_EN_POS = 16,
++};
++
++enum SYSC_AWO_REG_PIN_SEL3_FIELD
++{
++    SYSC_AWO_FUNC_IOE_EN_MASK = (int)0xffff,
++    SYSC_AWO_FUNC_IOE_EN_POS = 0,
++    SYSC_AWO_FUNC_IOF_EN_MASK = (int)0xffff0000,
++    SYSC_AWO_FUNC_IOF_EN_POS = 16,
++};
++
++enum SYSC_AWO_REG_PIN_SEL4_FIELD
++{
++    SYSC_AWO_FUNC_IOG_EN_MASK = (int)0xffff,
++    SYSC_AWO_FUNC_IOG_EN_POS = 0,
++    SYSC_AWO_FUNC_IOH_EN_MASK = (int)0xffff0000,
++    SYSC_AWO_FUNC_IOH_EN_POS = 16,
++};
++
++enum SYSC_AWO_REG_PIN_SEL5_FIELD
++{
++    SYSC_AWO_KEYI_EN_MASK = (int)0xff,
++    SYSC_AWO_KEYI_EN_POS = 0,
++    SYSC_AWO_KEYO_EN_MASK = (int)0x3ffff00,
++    SYSC_AWO_KEYO_EN_POS = 8,
++};
++
++enum SYSC_AWO_REG_IOA_LOCK_FIELD
++{
++    SYSC_AWO_GPIOA_LOCK_MASK = (int)0xffff,
++    SYSC_AWO_GPIOA_LOCK_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOA_OE_DOT_FIELD
++{
++    SYSC_AWO_GPIOA_DOT_MASK = (int)0xffff,
++    SYSC_AWO_GPIOA_DOT_POS = 0,
++    SYSC_AWO_GPIOA_OE_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOA_OE_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOA_PD_PU_FIELD
++{
++    SYSC_AWO_GPIOA_PU_MASK = (int)0xffff,
++    SYSC_AWO_GPIOA_PU_POS = 0,
++    SYSC_AWO_GPIOA_PD_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOA_PD_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOA_IE_OD_FIELD
++{
++    SYSC_AWO_GPIOA_OD_MASK = (int)0xffff,
++    SYSC_AWO_GPIOA_OD_POS = 0,
++    SYSC_AWO_GPIOA_IE_N_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOA_IE_N_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOA_DS_FIELD
++{
++    SYSC_AWO_GPIOA_DS2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOA_DS2_POS = 0,
++    SYSC_AWO_GPIOA_DS1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOA_DS1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOA_AE_FIELD
++{
++    SYSC_AWO_GPIOA_AE2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOA_AE2_POS = 0,
++    SYSC_AWO_GPIOA_AE1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOA_AE1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOA_FIR_FIELD
++{
++    SYSC_AWO_GPIOA_FIR_MASK = (int)0xffff,
++    SYSC_AWO_GPIOA_FIR_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOA_DIN_FIELD
++{
++    SYSC_AWO_GPIOA_DIN_MASK = (int)0xffff,
++    SYSC_AWO_GPIOA_DIN_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOB_LOCK_FIELD
++{
++    SYSC_AWO_GPIOB_LOCK_MASK = (int)0xffff,
++    SYSC_AWO_GPIOB_LOCK_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOB_OE_DOT_FIELD
++{
++    SYSC_AWO_GPIOB_DOT_MASK = (int)0xffff,
++    SYSC_AWO_GPIOB_DOT_POS = 0,
++    SYSC_AWO_GPIOB_OE_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOB_OE_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOB_PD_PU_FIELD
++{
++    SYSC_AWO_GPIOB_PU_MASK = (int)0xffff,
++    SYSC_AWO_GPIOB_PU_POS = 0,
++    SYSC_AWO_GPIOB_PD_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOB_PD_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOB_IE_OD_FIELD
++{
++    SYSC_AWO_GPIOB_OD_MASK = (int)0xffff,
++    SYSC_AWO_GPIOB_OD_POS = 0,
++    SYSC_AWO_GPIOB_IE_N_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOB_IE_N_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOB_DS_FIELD
++{
++    SYSC_AWO_GPIOB_DS2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOB_DS2_POS = 0,
++    SYSC_AWO_GPIOB_DS1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOB_DS1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOB_AE_FIELD
++{
++    SYSC_AWO_GPIOB_AE2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOB_AE2_POS = 0,
++    SYSC_AWO_GPIOB_AE1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOB_AE1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOB_FIR_FIELD
++{
++    SYSC_AWO_GPIOB_FIR_MASK = (int)0xffff,
++    SYSC_AWO_GPIOB_FIR_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOB_DIN_FIELD
++{
++    SYSC_AWO_GPIOB_DIN_MASK = (int)0xffff,
++    SYSC_AWO_GPIOB_DIN_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOC_LOCK_FIELD
++{
++    SYSC_AWO_GPIOC_LOCK_MASK = (int)0xffff,
++    SYSC_AWO_GPIOC_LOCK_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOC_OE_DOT_FIELD
++{
++    SYSC_AWO_GPIOC_DOT_MASK = (int)0xffff,
++    SYSC_AWO_GPIOC_DOT_POS = 0,
++    SYSC_AWO_GPIOC_OE_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOC_OE_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOC_PD_PU_FIELD
++{
++    SYSC_AWO_GPIOC_PU_MASK = (int)0xffff,
++    SYSC_AWO_GPIOC_PU_POS = 0,
++    SYSC_AWO_GPIOC_PD_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOC_PD_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOC_IE_OD_FIELD
++{
++    SYSC_AWO_GPIOC_OD_MASK = (int)0xffff,
++    SYSC_AWO_GPIOC_OD_POS = 0,
++    SYSC_AWO_GPIOC_IE_N_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOC_IE_N_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOC_DS_FIELD
++{
++    SYSC_AWO_GPIOC_DS2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOC_DS2_POS = 0,
++    SYSC_AWO_GPIOC_DS1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOC_DS1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOC_AE_FIELD
++{
++    SYSC_AWO_GPIOC_AE2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOC_AE2_POS = 0,
++    SYSC_AWO_GPIOC_AE1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOC_AE1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOC_FIR_FIELD
++{
++    SYSC_AWO_GPIOC_FIR_MASK = (int)0xffff,
++    SYSC_AWO_GPIOC_FIR_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOC_DIN_FIELD
++{
++    SYSC_AWO_GPIOC_DIN_MASK = (int)0xffff,
++    SYSC_AWO_GPIOC_DIN_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOD_LOCK_FIELD
++{
++    SYSC_AWO_GPIOD_LOCK_MASK = (int)0xffff,
++    SYSC_AWO_GPIOD_LOCK_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOD_OE_DOT_FIELD
++{
++    SYSC_AWO_GPIOD_DOT_MASK = (int)0xffff,
++    SYSC_AWO_GPIOD_DOT_POS = 0,
++    SYSC_AWO_GPIOD_OE_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOD_OE_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOD_PD_PU_FIELD
++{
++    SYSC_AWO_GPIOD_PU_MASK = (int)0xffff,
++    SYSC_AWO_GPIOD_PU_POS = 0,
++    SYSC_AWO_GPIOD_PD_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOD_PD_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOD_IE_OD_FIELD
++{
++    SYSC_AWO_GPIOD_OD_MASK = (int)0xffff,
++    SYSC_AWO_GPIOD_OD_POS = 0,
++    SYSC_AWO_GPIOD_IE_N_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOD_IE_N_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOD_DS_FIELD
++{
++    SYSC_AWO_GPIOD_DS2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOD_DS2_POS = 0,
++    SYSC_AWO_GPIOD_DS1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOD_DS1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOD_AE_FIELD
++{
++    SYSC_AWO_GPIOD_AE2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOD_AE2_POS = 0,
++    SYSC_AWO_GPIOD_AE1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOD_AE1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOD_FIR_FIELD
++{
++    SYSC_AWO_GPIOD_FIR_MASK = (int)0xffff,
++    SYSC_AWO_GPIOD_FIR_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOD_DIN_FIELD
++{
++    SYSC_AWO_GPIOD_DIN_MASK = (int)0xffff,
++    SYSC_AWO_GPIOD_DIN_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOE_LOCK_FIELD
++{
++    SYSC_AWO_GPIOE_LOCK_MASK = (int)0xffff,
++    SYSC_AWO_GPIOE_LOCK_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOE_OE_DOT_FIELD
++{
++    SYSC_AWO_GPIOE_DOT_MASK = (int)0xffff,
++    SYSC_AWO_GPIOE_DOT_POS = 0,
++    SYSC_AWO_GPIOE_OE_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOE_OE_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOE_PD_PU_FIELD
++{
++    SYSC_AWO_GPIOE_PU_MASK = (int)0xffff,
++    SYSC_AWO_GPIOE_PU_POS = 0,
++    SYSC_AWO_GPIOE_PD_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOE_PD_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOE_IE_OD_FIELD
++{
++    SYSC_AWO_GPIOE_OD_MASK = (int)0xffff,
++    SYSC_AWO_GPIOE_OD_POS = 0,
++    SYSC_AWO_GPIOE_IE_N_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOE_IE_N_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOE_DS_FIELD
++{
++    SYSC_AWO_GPIOE_DS2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOE_DS2_POS = 0,
++    SYSC_AWO_GPIOE_DS1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOE_DS1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOE_AE_FIELD
++{
++    SYSC_AWO_GPIOE_AE2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOE_AE2_POS = 0,
++    SYSC_AWO_GPIOE_AE1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOE_AE1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOE_FIR_FIELD
++{
++    SYSC_AWO_GPIOE_FIR_MASK = (int)0xffff,
++    SYSC_AWO_GPIOE_FIR_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOE_DIN_FIELD
++{
++    SYSC_AWO_GPIOE_DIN_MASK = (int)0xffff,
++    SYSC_AWO_GPIOE_DIN_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOF_LOCK_FIELD
++{
++    SYSC_AWO_GPIOF_LOCK_MASK = (int)0xffff,
++    SYSC_AWO_GPIOF_LOCK_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOF_OE_DOT_FIELD
++{
++    SYSC_AWO_GPIOF_DOT_MASK = (int)0xffff,
++    SYSC_AWO_GPIOF_DOT_POS = 0,
++    SYSC_AWO_GPIOF_OE_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOF_OE_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOF_PD_PU_FIELD
++{
++    SYSC_AWO_GPIOF_PU_MASK = (int)0xffff,
++    SYSC_AWO_GPIOF_PU_POS = 0,
++    SYSC_AWO_GPIOF_PD_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOF_PD_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOF_IE_OD_FIELD
++{
++    SYSC_AWO_GPIOF_OD_MASK = (int)0xffff,
++    SYSC_AWO_GPIOF_OD_POS = 0,
++    SYSC_AWO_GPIOF_IE_N_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOF_IE_N_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOF_DS_FIELD
++{
++    SYSC_AWO_GPIOF_DS2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOF_DS2_POS = 0,
++    SYSC_AWO_GPIOF_DS1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOF_DS1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOF_AE_FIELD
++{
++    SYSC_AWO_GPIOF_AE2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOF_AE2_POS = 0,
++    SYSC_AWO_GPIOF_AE1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOF_AE1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOF_FIR_FIELD
++{
++    SYSC_AWO_GPIOF_FIR_MASK = (int)0xffff,
++    SYSC_AWO_GPIOF_FIR_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOF_DIN_FIELD
++{
++    SYSC_AWO_GPIOF_DIN_MASK = (int)0xffff,
++    SYSC_AWO_GPIOF_DIN_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOG_LOCK_FIELD
++{
++    SYSC_AWO_GPIOG_LOCK_MASK = (int)0xffff,
++    SYSC_AWO_GPIOG_LOCK_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOG_OE_DOT_FIELD
++{
++    SYSC_AWO_GPIOG_DOT_MASK = (int)0xffff,
++    SYSC_AWO_GPIOG_DOT_POS = 0,
++    SYSC_AWO_GPIOG_OE_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOG_OE_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOG_PD_PU_FIELD
++{
++    SYSC_AWO_GPIOG_PU_MASK = (int)0xffff,
++    SYSC_AWO_GPIOG_PU_POS = 0,
++    SYSC_AWO_GPIOG_PD_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOG_PD_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOG_IE_OD_FIELD
++{
++    SYSC_AWO_GPIOG_OD_MASK = (int)0xffff,
++    SYSC_AWO_GPIOG_OD_POS = 0,
++    SYSC_AWO_GPIOG_IE_N_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOG_IE_N_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOG_DS_FIELD
++{
++    SYSC_AWO_GPIOG_DS2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOG_DS2_POS = 0,
++    SYSC_AWO_GPIOG_DS1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOG_DS1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOG_AE_FIELD
++{
++    SYSC_AWO_GPIOG_AE2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOG_AE2_POS = 0,
++    SYSC_AWO_GPIOG_AE1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOG_AE1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOG_FIR_FIELD
++{
++    SYSC_AWO_GPIOG_FIR_MASK = (int)0xffff,
++    SYSC_AWO_GPIOG_FIR_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOG_DIN_FIELD
++{
++    SYSC_AWO_GPIOG_DIN_MASK = (int)0xffff,
++    SYSC_AWO_GPIOG_DIN_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOH_LOCK_FIELD
++{
++    SYSC_AWO_GPIOH_LOCK_MASK = (int)0xffff,
++    SYSC_AWO_GPIOH_LOCK_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOH_OE_DOT_FIELD
++{
++    SYSC_AWO_GPIOH_DOT_MASK = (int)0xffff,
++    SYSC_AWO_GPIOH_DOT_POS = 0,
++    SYSC_AWO_GPIOH_OE_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOH_OE_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOH_PD_PU_FIELD
++{
++    SYSC_AWO_GPIOH_PU_MASK = (int)0xffff,
++    SYSC_AWO_GPIOH_PU_POS = 0,
++    SYSC_AWO_GPIOH_PD_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOH_PD_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOH_IE_OD_FIELD
++{
++    SYSC_AWO_GPIOH_OD_MASK = (int)0xffff,
++    SYSC_AWO_GPIOH_OD_POS = 0,
++    SYSC_AWO_GPIOH_IE_N_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOH_IE_N_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOH_DS_FIELD
++{
++    SYSC_AWO_GPIOH_DS2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOH_DS2_POS = 0,
++    SYSC_AWO_GPIOH_DS1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOH_DS1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOH_AE_FIELD
++{
++    SYSC_AWO_GPIOH_AE2_MASK = (int)0xffff,
++    SYSC_AWO_GPIOH_AE2_POS = 0,
++    SYSC_AWO_GPIOH_AE1_MASK = (int)0xffff0000,
++    SYSC_AWO_GPIOH_AE1_POS = 16,
++};
++
++enum SYSC_AWO_REG_IOH_FIR_FIELD
++{
++    SYSC_AWO_GPIOH_FIR_MASK = (int)0xffff,
++    SYSC_AWO_GPIOH_FIR_POS = 0,
++};
++
++enum SYSC_AWO_REG_IOH_DIN_FIELD
++{
++    SYSC_AWO_GPIOH_DIN_MASK = (int)0xffff,
++    SYSC_AWO_GPIOH_DIN_POS = 0,
++};
++
++enum SYSC_AWO_REG_DBG_ACK_FIELD
++{
++    SYSC_AWO_CPU_CDBGPWRUPACK_MASK = (int)0x1,
++    SYSC_AWO_CPU_CDBGPWRUPACK_POS = 0,
++};
++
++enum SYSC_AWO_REG_ANA_STAT_FIELD
++{
++    SYSC_AWO_DPLL_LOCK_MASK = (int)0x2,
++    SYSC_AWO_DPLL_LOCK_POS = 1,
++};
++
++
++#define FIO_GPTIMA1_CH1     1
++#define FIO_GPTIMA1_CH2     2
++#define FIO_GPTIMA1_CH3     3
++#define FIO_GPTIMA1_CH4     4
++#define FIO_GPTIMA1_ETR     5
++#define FIO_GPTIMA2_CH1     6
++#define FIO_GPTIMA2_CH2     7
++#define FIO_GPTIMA2_CH3     8
++#define FIO_GPTIMA2_CH4     9
++#define FIO_GPTIMA2_ETR     10
++#define FIO_GPTIMB1_CH1     11
++#define FIO_GPTIMB1_CH2     12
++#define FIO_GPTIMB1_CH3     13
++#define FIO_GPTIMB1_CH4     14
++#define FIO_GPTIMB1_ETR     15
++#define FIO_GPTIMC1_CH1     16
++#define FIO_GPTIMC1_CH1N    17
++#define FIO_GPTIMC1_CH2     18
++#define FIO_GPTIMC1_BK      19
++#define FIO_ADTIM1_CH1      20
++#define FIO_ADTIM1_CH1N     21
++#define FIO_ADTIM1_CH2      22
++#define FIO_ADTIM1_CH2N     23
++#define FIO_ADTIM1_CH3      24
++#define FIO_ADTIM1_CH3N     25
++#define FIO_ADTIM1_CH4      26
++#define FIO_ADTIM1_ETR      27
++#define FIO_ADTIM1_BK       28
++#define FIO_ADTIM2_CH1      29
++#define FIO_ADTIM2_CH1N     30
++#define FIO_ADTIM2_CH2      31
++#define FIO_ADTIM2_CH2N     32
++#define FIO_ADTIM2_CH3      33
++#define FIO_ADTIM2_CH3N     34
++#define FIO_ADTIM2_CH4      35
++#define FIO_ADTIM2_ETR      36
++#define FIO_ADTIM2_BK       37
++#define FIO_ADTIM3_CH1      38
++#define FIO_ADTIM3_CH1N     39
++#define FIO_ADTIM3_CH2      40
++#define FIO_ADTIM3_CH2N     41
++#define FIO_ADTIM3_CH3      42
++#define FIO_ADTIM3_CH3N     43
++#define FIO_ADTIM3_CH4      44
++#define FIO_ADTIM3_ETR      45
++#define FIO_ADTIM3_BK       46
++#define FIO_ADTIM4_CH1      47
++#define FIO_ADTIM4_CH1N     48
++#define FIO_ADTIM4_CH2      49
++#define FIO_ADTIM4_CH2N     50
++#define FIO_ADTIM4_CH3      51
++#define FIO_ADTIM4_CH3N     52
++#define FIO_ADTIM4_CH4      53
++#define FIO_ADTIM4_ETR      54
++#define FIO_ADTIM4_BK       55
++#define FIO_I2C1_SCL        56
++#define FIO_I2C1_SDA        57
++#define FIO_I2C1_SMBA       58
++#define FIO_I2C2_SCL        59
++#define FIO_I2C2_SDA        60
++#define FIO_I2C2_SMBA       61
++#define FIO_I2C3_SDA        62
++#define FIO_I2C3_SCL        63
++#define FIO_I2C3_SMBA       64
++#define FIO_I2C4_SCL        65
++#define FIO_I2C4_SDA        66
++#define FIO_I2C4_SMBA       67
++#define FIO_I2C5_SCL        68
++#define FIO_I2C5_SDA        69
++#define FIO_I2C5_SMBA       70
++#define FIO_I2C6_SDA        71
++#define FIO_I2C6_SCL        72
++#define FIO_I2C6_SMBA       73
++#define FIO_UART1_TXD       74
++#define FIO_UART1_RXD       75
++#define FIO_UART1_CTSN      76
++#define FIO_UART1_RTSN      77
++#define FIO_UART1_CK        78
++#define FIO_UART2_TXD       79
++#define FIO_UART2_RXD       80
++#define FIO_UART2_CTSN      81
++#define FIO_UART2_RTSN      82
++#define FIO_UART3_TXD       83
++#define FIO_UART3_RXD       84
++#define FIO_UART3_CTSN      85
++#define FIO_UART3_RTSN      86
++#define FIO_DWUART1_TXD       87
++#define FIO_DWUART1_RXD       88
++#define FIO_DWUART1_CTSN      89
++#define FIO_DWUART1_RTSN      90
++#define FIO_DWUART1_DE        91
++#define FIO_DWUART1_RE        92
++#define FIO_DWUART2_TXD       93
++#define FIO_DWUART2_RXD       94
++#define FIO_DWUART2_CTSN      95
++#define FIO_DWUART2_RTSN      96
++#define FIO_DWUART2_DE        97
++#define FIO_DWUART2_RE        98
++#define FIO_SPI1_NSS0       99
++#define FIO_SPI1_NSS1       100
++#define FIO_SPI1_SCK        101
++#define FIO_SPI1_DQ0        102
++#define FIO_SPI1_DQ1        103
++#define FIO_SPI1_DQ2        104
++#define FIO_SPI1_DQ3        105
++#define FIO_SPI2_SCK        106
++#define FIO_SPI2_NSS        107
++#define FIO_SPI2_MOSI       108
++#define FIO_SPI2_MISO       109
++#define FIO_SPI2_I2S        110
++#define FIO_SPI3_SCK        111
++#define FIO_SPI3_NSS        112
++#define FIO_SPI3_MOSI       113
++#define FIO_SPI3_MISO       114
++#define FIO_SPI3_I2S        115
++#define FIO_PDM_CLK         116
++#define FIO_PDM_DATA0       117
++#define FIO_PDM_DATA1       118
++#define FIO_PIS_CH0         119
++#define FIO_PIS_CH1         120
++#define FIO_BXCAN_TXD       121
++#define FIO_BXCAN_RXD       122
++#define FIO_USB_DP          123
++#define FIO_USB_DM          124
++#define FIO_COMP1           125
++#define FIO_COMP2           126
++#define FIO_COMP3           127
++#define FIO_PWM1            128
++#define FIO_PWM2            129
++#define FIO_PWM3            130
++#define FIO_PWM4            131
++#define FIO_PWM5            132
++#define FIO_PWM6            133
++#define FIO_PWM7            134
++#define FIO_PWM8            135
++#define FIO_CAP1            136
++#define FIO_CAP2            137
++#define FIO_CAP3            138
++#define FIO_CAP4            139
++#define FIO_CAP5            140
++#define FIO_CAP6            141
++#define FIO_CAP7            142
++#define FIO_CAP8            143
++#define FIO_OWM             144
++#define FIO_PS2H1_CLK      145
++#define FIO_PS2H1_DAT      146
++#define FIO_PS2H2_CLK      147
++#define FIO_PS2H2_DAT      148
++#define FIO_PS2H3_CLK      149
++#define FIO_PS2H3_DAT      150
++#define FIO_PS2H4_CLK      151
++#define FIO_PS2H4_DAT      152
++#define FIO_CEC             153
++#define FIO_PECI            154
++#define FIO_I2C_DBG_SCL     155
++#define FIO_I2C_DBG_SDA     156
++
++
++enum per_func
++{
++    /* GP TIM A */
++    GPTIMA1_CH1 = FIO_GPTIMA1_CH1,
++    GPTIMA1_CH2 = FIO_GPTIMA1_CH2,
++    GPTIMA1_CH3 = FIO_GPTIMA1_CH3,
++    GPTIMA1_CH4 = FIO_GPTIMA1_CH4,
++    GPTIMA1_ETR = FIO_GPTIMA1_ETR,
++    /* GP TIM B */
++    GPTIMB1_CH1 = FIO_GPTIMB1_CH1,
++    GPTIMB1_CH2 = FIO_GPTIMB1_CH2,
++    GPTIMB1_CH3 = FIO_GPTIMB1_CH3,
++    GPTIMB1_CH4 = FIO_GPTIMB1_CH4,
++    GPTIMB1_ETR = FIO_GPTIMB1_ETR,
++    /* GP TIM C */
++    GPTIMC1_CH1 = FIO_GPTIMC1_CH1,
++    GPTIMC1_CH1N = FIO_GPTIMC1_CH1N,
++    GPTIMC1_CH2 = FIO_GPTIMC1_CH2,
++    GPTIMC1_BK  = FIO_GPTIMC1_BK,
++    /* AD TIM 1 */
++    ADTIM1_CH1  = FIO_ADTIM1_CH1,
++    ADTIM1_CH1N = FIO_ADTIM1_CH1N,
++    ADTIM1_CH2  = FIO_ADTIM1_CH2,
++    ADTIM1_CH2N = FIO_ADTIM1_CH2N,
++    ADTIM1_CH3  = FIO_ADTIM1_CH3,
++    ADTIM1_CH3N = FIO_ADTIM1_CH3N,
++    ADTIM1_CH4  = FIO_ADTIM1_CH4,
++    ADTIM1_ETR  = FIO_ADTIM1_ETR,
++    ADTIM1_BK   = FIO_ADTIM1_BK,
++    /* AD TIM 2 */
++    ADTIM2_CH1  = FIO_ADTIM2_CH1,
++    ADTIM2_CH1N = FIO_ADTIM2_CH1N,
++    ADTIM2_CH2  = FIO_ADTIM2_CH2,
++    ADTIM2_CH2N = FIO_ADTIM2_CH2N,
++    ADTIM2_CH3  = FIO_ADTIM2_CH3,
++    ADTIM2_CH3N = FIO_ADTIM2_CH3N,
++    ADTIM2_CH4  = FIO_ADTIM2_CH4,
++    ADTIM2_ETR  = FIO_ADTIM2_ETR,
++    ADTIM2_BK   = FIO_ADTIM2_BK,
++    /* I2C 1 */
++    IIC1_SCL    = FIO_I2C1_SCL,
++    IIC1_SDA    = FIO_I2C1_SDA,
++    IIC1_SMBA   = FIO_I2C1_SMBA,
++    /* I2C 2 */
++    IIC2_SCL    = FIO_I2C2_SCL,
++    IIC2_SDA    = FIO_I2C2_SDA,
++    IIC2_SMBA   = FIO_I2C2_SMBA,
++    /* I2C 3 */
++    IIC3_SDA    = FIO_I2C3_SDA,
++    IIC3_SCL    = FIO_I2C3_SCL,
++    IIC3_SMBA   = FIO_I2C3_SMBA,
++    /* I2C 4 */
++    IIC4_SCL    = FIO_I2C4_SCL,
++    IIC4_SDA    = FIO_I2C4_SDA,
++    IIC4_SMBA   = FIO_I2C4_SMBA,
++    /* I2C 5 */
++    IIC5_SCL    = FIO_I2C5_SCL,
++    IIC5_SDA    = FIO_I2C5_SDA,
++    IIC5_SMBA   = FIO_I2C5_SMBA,
++    /* I2C 6 */
++    IIC6_SDA    = FIO_I2C6_SDA,
++    IIC6_SCL    = FIO_I2C6_SCL,
++    IIC6_SMBA   = FIO_I2C6_SMBA,
++    /* UART 1 */
++    UART1_TXD   = FIO_UART1_TXD,
++    UART1_RXD   = FIO_UART1_RXD,
++    UART1_CTSN  = FIO_UART1_CTSN,
++    UART1_RTSN  = FIO_UART1_RTSN,
++    UART1_CK    = FIO_UART1_CK,
++    /* UART 2 */
++    UART2_TXD   = FIO_UART2_TXD,
++    UART2_RXD   = FIO_UART2_RXD,
++    /* UART 3 */
++    UART3_TXD   = FIO_UART3_TXD,
++    UART3_RXD   = FIO_UART3_RXD,
++    /* UART 4 */
++    DWUART1_TXD   = FIO_DWUART1_TXD,
++    DWUART1_RXD   = FIO_DWUART1_RXD,
++    /* UART 5 */
++    DWUART2_TXD   = FIO_DWUART2_TXD,
++    DWUART2_RXD   = FIO_DWUART2_RXD,
++    /* SPI 1 */
++    SPI1_NSS0   = FIO_SPI1_NSS0,
++    SPI1_NSS1   = FIO_SPI1_NSS1,
++    SPI1_SCK    = FIO_SPI1_SCK,
++    SPI1_DQ0    = FIO_SPI1_DQ0,
++    SPI1_DQ1    = FIO_SPI1_DQ1,
++    SPI1_DQ2    = FIO_SPI1_DQ2,
++    SPI1_DQ3    = FIO_SPI1_DQ3,
++    /* SPI 2 */
++    SPI2_SCK    = FIO_SPI2_SCK,
++    SPI2_NSS    = FIO_SPI2_NSS,
++    SPI2_MOSI   = FIO_SPI2_MOSI,
++    SPI2_MISO   = FIO_SPI2_MISO,
++    SPI2_IIS    = FIO_SPI2_I2S,
++    /* SPI 3 */
++    SPI3_SCK    = FIO_SPI3_SCK,
++    SPI3_NSS    = FIO_SPI3_NSS,
++    SPI3_MOSI   = FIO_SPI3_MOSI,
++    SPI3_MISO   = FIO_SPI3_MISO,
++    SPI3_IIS    = FIO_SPI3_I2S,
++    /* PDM */
++    PDM_CLK     = FIO_PDM_CLK,
++    PDM_DATA0   = FIO_PDM_DATA0,
++    PDM_DATA1   = FIO_PDM_DATA1,
++    /* PIS */
++    PIS_CH0     = FIO_PIS_CH0,
++    PIS_CH1     = FIO_PIS_CH1,
++    /* BXCAN */
++    BXCAN_TXD   = FIO_BXCAN_TXD,
++    BXCAN_RXD   = FIO_BXCAN_RXD,
++    /* USB */
++    USB_DP      = FIO_USB_DP,
++    USB_DM      = FIO_USB_DM,
++    /* COMPx */
++    COMP1       = FIO_COMP1,
++    COMP2       = FIO_COMP2,
++    COMP3       = FIO_COMP3,
++
++    /* I2C_DBG */
++    I2C_DBG_CLK = FIO_I2C_DBG_SCL,
++    I2C_DBG_DAT = FIO_I2C_DBG_SDA,
++
++    /* CEC */
++    CEC_CH      = FIO_CEC,
++
++    /* PS2 */
++    PS2H1_CLK   = FIO_PS2H1_CLK,
++    PS2H1_DAT   = FIO_PS2H1_DAT,
++    PS2H2_CLK   = FIO_PS2H2_CLK,
++    PS2H2_DAT   = FIO_PS2H2_DAT,
++    PS2H3_CLK   = FIO_PS2H3_CLK,
++    PS2H3_DAT   = FIO_PS2H3_DAT,
++    PS2H4_CLK   = FIO_PS2H4_CLK,
++    PS2H4_DAT   = FIO_PS2H4_DAT,
++
++    /* OWM */
++    OWM_CH      = FIO_OWM,
++
++    /* PWM */
++    PWM_CH1     = FIO_PWM1,
++    PWM_CH2     = FIO_PWM2,
++    PWM_CH3     = FIO_PWM3,
++    PWM_CH4     = FIO_PWM4,
++    PWM_CH5     = FIO_PWM5,
++    PWM_CH6     = FIO_PWM6,
++    PWM_CH7     = FIO_PWM7,
++    PWM_CH8     = FIO_PWM8,
++
++    /* PECI */
++    PECI_DAT    = FIO_PECI,
++
++    // RSV07,
++    // ANT0,
++    // ANT1,
++    // ANT2,
++    // ANT3,
++    // ANT4,
++    // ANT5,
++    // ANT6,
++    // ANT7,
++};
++
++
++//lingsi gpioa
++#define PA00 ((uint8_t)0x00)   /*!< GPIOA00 selected */
++#define PA01 ((uint8_t)0x01)   /*!< GPIOA01 selected */
++#define PA02 ((uint8_t)0x02)   /*!< GPIOA02 selected */
++#define PA03 ((uint8_t)0x03)   /*!< GPIOA03 selected */
++#define PA04 ((uint8_t)0x04)   /*!< GPIOA04 selected */
++#define PA05 ((uint8_t)0x05)   /*!< GPIOA05 selected */
++#define PA06 ((uint8_t)0x06)   /*!< GPIOA06 selected */
++#define PA07 ((uint8_t)0x07)   /*!< GPIOA07 selected */
++#define PA08 ((uint8_t)0x08)   /*!< GPIOA08 selected */
++#define PA09 ((uint8_t)0x09)   /*!< GPIOA09 selected */
++#define PA10 ((uint8_t)0x0A)   /*!< GPIOA10 selected */
++#define PA11 ((uint8_t)0x0B)   /*!< GPIOA11 selected */
++#define PA12 ((uint8_t)0x0C)   /*!< GPIOA12 selected */
++#define PA13 ((uint8_t)0x0D)   /*!< GPIOA13 selected */
++#define PA14 ((uint8_t)0x0E)   /*!< GPIOA14 selected */
++#define PA15 ((uint8_t)0x0F)   /*!< GPIOA15 selected */
++//lingsi gpiob
++#define PB00 ((uint8_t)0X10)   /*!< GPIOB00 selected */
++#define PB01 ((uint8_t)0X11)   /*!< GPIOB01 selected */
++#define PB02 ((uint8_t)0X12)   /*!< GPIOB02 selected */
++#define PB03 ((uint8_t)0X13)   /*!< GPIOB03 selected */
++#define PB04 ((uint8_t)0X14)   /*!< GPIOB04 selected */
++#define PB05 ((uint8_t)0X15)   /*!< GPIOB05 selected */
++#define PB06 ((uint8_t)0X16)   /*!< GPIOB06 selected */
++#define PB07 ((uint8_t)0X17)   /*!< GPIOB07 selected */
++#define PB08 ((uint8_t)0X18)   /*!< GPIOB08 selected */
++#define PB09 ((uint8_t)0X19)   /*!< GPIOB09 selected */
++#define PB10 ((uint8_t)0X1A)   /*!< GPIOB10 selected */
++#define PB11 ((uint8_t)0X1B)   /*!< GPIOB11 selected */
++#define PB12 ((uint8_t)0X1C)   /*!< GPIOB12 selected */
++#define PB13 ((uint8_t)0X1D)   /*!< GPIOB13 selected */
++#define PB14 ((uint8_t)0X1E)   /*!< GPIOB14 selected */
++#define PB15 ((uint8_t)0X1F)   /*!< GPIOB15 selected */
++//lingsi gpioc
++#define PC00 ((uint8_t)0X20)   /*!< GPIOC00 selected */
++#define PC01 ((uint8_t)0X21)   /*!< GPIOC01 selected */
++#define PC02 ((uint8_t)0X22)   /*!< GPIOC02 selected */
++#define PC03 ((uint8_t)0X23)   /*!< GPIOC03 selected */
++#define PC04 ((uint8_t)0X24)   /*!< GPIOC04 selected */
++#define PC05 ((uint8_t)0X25)   /*!< GPIOC05 selected */
++#define PC06 ((uint8_t)0X26)   /*!< GPIOC06 selected */
++#define PC07 ((uint8_t)0X27)   /*!< GPIOC07 selected */
++#define PC08 ((uint8_t)0X28)   /*!< GPIOC08 selected */
++#define PC09 ((uint8_t)0X29)   /*!< GPIOC09 selected */
++#define PC10 ((uint8_t)0X2A)   /*!< GPIOC10 selected */
++#define PC11 ((uint8_t)0X2B)   /*!< GPIOC11 selected */
++#define PC12 ((uint8_t)0X2C)   /*!< GPIOC12 selected */
++#define PC13 ((uint8_t)0X2D)   /*!< GPIOC13 selected */
++#define PC14 ((uint8_t)0X2E)   /*!< GPIOC14 selected */
++#define PC15 ((uint8_t)0X2F)   /*!< GPIOC15 selected */
++//lingsi gpiod
++#define PD00 ((uint8_t)0X30)   /*!< GPIOD00 selected */
++#define PD01 ((uint8_t)0X31)   /*!< GPIOD01 selected */
++#define PD02 ((uint8_t)0X32)   /*!< GPIOD02 selected */
++#define PD03 ((uint8_t)0X33)   /*!< GPIOD03 selected */
++#define PD04 ((uint8_t)0X34)   /*!< GPIOD04 selected */
++#define PD05 ((uint8_t)0X35)   /*!< GPIOD05 selected */
++#define PD06 ((uint8_t)0X36)   /*!< GPIOD06 selected */
++#define PD07 ((uint8_t)0X37)   /*!< GPIOD07 selected */
++#define PD08 ((uint8_t)0X38)   /*!< GPIOD08 selected */
++#define PD09 ((uint8_t)0X39)   /*!< GPIOD09 selected */
++#define PD10 ((uint8_t)0X3A)   /*!< GPIOD10 selected */
++#define PD11 ((uint8_t)0X3B)   /*!< GPIOD11 selected */
++#define PD12 ((uint8_t)0X3C)   /*!< GPIOD12 selected */
++#define PD13 ((uint8_t)0X3D)   /*!< GPIOD13 selected */
++#define PD14 ((uint8_t)0X3E)   /*!< GPIOD14 selected */
++#define PD15 ((uint8_t)0X3F)   /*!< GPIOD15 selected */
++//lingsi gpioe
++#define PE00 ((uint8_t)0X40)   /*!< GPIOE00 selected */
++#define PE01 ((uint8_t)0X41)   /*!< GPIOE01 selected */
++#define PE02 ((uint8_t)0X42)   /*!< GPIOE02 selected */
++#define PE03 ((uint8_t)0X43)   /*!< GPIOE03 selected */
++#define PE04 ((uint8_t)0X44)   /*!< GPIOE04 selected */
++#define PE05 ((uint8_t)0X45)   /*!< GPIOE05 selected */
++#define PE06 ((uint8_t)0X46)   /*!< GPIOE06 selected */
++#define PE07 ((uint8_t)0X47)   /*!< GPIOE07 selected */
++#define PE08 ((uint8_t)0X48)   /*!< GPIOE08 selected */
++#define PE09 ((uint8_t)0X49)   /*!< GPIOE09 selected */
++#define PE10 ((uint8_t)0X4A)   /*!< GPIOE10 selected */
++#define PE11 ((uint8_t)0X4B)   /*!< GPIOE11 selected */
++#define PE12 ((uint8_t)0X4C)   /*!< GPIOE12 selected */
++#define PE13 ((uint8_t)0X4D)   /*!< GPIOE13 selected */
++#define PE14 ((uint8_t)0X4E)   /*!< GPIOE14 selected */
++#define PE15 ((uint8_t)0X4F)   /*!< GPIOE15 selected */
++//lingsi gpiof
++#define PF00 ((uint8_t)0X50)   /*!< GPIOF00 selected */
++#define PF01 ((uint8_t)0X51)   /*!< GPIOF01 selected */
++#define PF02 ((uint8_t)0X52)   /*!< GPIOF02 selected */
++#define PF03 ((uint8_t)0X53)   /*!< GPIOF03 selected */
++#define PF04 ((uint8_t)0X54)   /*!< GPIOF04 selected */
++#define PF05 ((uint8_t)0X55)   /*!< GPIOF05 selected */
++#define PF06 ((uint8_t)0X56)   /*!< GPIOF06 selected */
++#define PF07 ((uint8_t)0X57)   /*!< GPIOF07 selected */
++#define PF08 ((uint8_t)0X58)   /*!< GPIOF08 selected */
++#define PF09 ((uint8_t)0X59)   /*!< GPIOF09 selected */
++#define PF10 ((uint8_t)0X5A)   /*!< GPIOF10 selected */
++#define PF11 ((uint8_t)0X5B)   /*!< GPIOF11 selected */
++#define PF12 ((uint8_t)0X5C)   /*!< GPIOF12 selected */
++#define PF13 ((uint8_t)0X5D)   /*!< GPIOF13 selected */
++#define PF14 ((uint8_t)0X5E)   /*!< GPIOF14 selected */
++#define PF15 ((uint8_t)0X5F)   /*!< GPIOF15 selected */
++//lingsi gpiog
++#define PG00 ((uint8_t)0X60)   /*!< GPIOG00 selected */
++#define PG01 ((uint8_t)0X61)   /*!< GPIOG01 selected */
++#define PG02 ((uint8_t)0X62)   /*!< GPIOG02 selected */
++#define PG03 ((uint8_t)0X63)   /*!< GPIOG03 selected */
++#define PG04 ((uint8_t)0X64)   /*!< GPIOG04 selected */
++#define PG05 ((uint8_t)0X65)   /*!< GPIOG05 selected */
++#define PG06 ((uint8_t)0X66)   /*!< GPIOG06 selected */
++#define PG07 ((uint8_t)0X67)   /*!< GPIOG07 selected */
++#define PG08 ((uint8_t)0X68)   /*!< GPIOG08 selected */
++#define PG09 ((uint8_t)0X69)   /*!< GPIOG09 selected */
++#define PG10 ((uint8_t)0X6A)   /*!< GPIOG10 selected */
++#define PG11 ((uint8_t)0X6B)   /*!< GPIOG11 selected */
++#define PG12 ((uint8_t)0X6C)   /*!< GPIOG12 selected */
++#define PG13 ((uint8_t)0X6D)   /*!< GPIOG13 selected */
++#define PG14 ((uint8_t)0X6E)   /*!< GPIOG14 selected */
++#define PG15 ((uint8_t)0X6F)   /*!< GPIOG15 selected */
++//lingsi gpioh
++#define PH00 ((uint8_t)0X70)   /*!< GPIOH00 selected */
++#define PH01 ((uint8_t)0X71)   /*!< GPIOH01 selected */
++#define PH02 ((uint8_t)0X72)   /*!< GPIOH02 selected */
++#define PH03 ((uint8_t)0X73)   /*!< GPIOH03 selected */
++#define PH04 ((uint8_t)0X74)   /*!< GPIOH04 selected */
++#define PH05 ((uint8_t)0X75)   /*!< GPIOH05 selected */
++#define PH06 ((uint8_t)0X76)   /*!< GPIOH06 selected */
++#define PH07 ((uint8_t)0X77)   /*!< GPIOH07 selected */
++#define PH08 ((uint8_t)0X78)   /*!< GPIOH08 selected */
++#define PH09 ((uint8_t)0X79)   /*!< GPIOH09 selected */
++#define PH10 ((uint8_t)0X7A)   /*!< GPIOH10 selected */
++#define PH11 ((uint8_t)0X7B)   /*!< GPIOH11 selected */
++#define PH12 ((uint8_t)0X7C)   /*!< GPIOH12 selected */
++#define PH13 ((uint8_t)0X7D)   /*!< GPIOH13 selected */
++#define PH14 ((uint8_t)0X7E)   /*!< GPIOH14 selected */
++#define PH15 ((uint8_t)0X7F)   /*!< GPIOH15 selected */
++
++#define PER_PD_PER_CLKG0 0x0
++#define PER_PD_PER_CLKG1 0x4
++#define PER_PD_PER_CLKG2 0x8
++#define PER_PD_PER_CLKG3 0xc
++#define PER_PD_PER_SRST0 0x10
++#define PER_PD_PER_SRST1 0x14
++#define PER_PD_PER_SRST2 0x18
++#define PER_PD_PER_SRST3 0x1c
++#define PER_FUNC_SEL 0x20
++#define PER_COMP_PIS 0xa0
++#define PER_PIS_SFT 0xa4
++#define PER_TIMER_UART 0xa8
++
++typedef struct
++{
++    uint8_t num:4,   /*!<gpio pin */
++            port:4;  /*!<gpio port */
++}gpio_port_pin_t;
++
++#define WRITE_REG(REG, VAL)  writel(VAL, REG)
++
++#define READ_REG(REG)  readl(REG)
++
++#define SET_BIT(REG, BIT)  WRITE_REG(REG, (READ_REG(REG)) | (BIT))
++
++#define CLEAR_BIT(REG, BIT)   WRITE_REG(REG, (READ_REG(REG)) & (~(BIT)))
++
++#define READ_BIT(REG, BIT)    (READ_REG(REG) & (BIT))
++
++#define CLEAR_REG(REG)        WRITE_REG(REG, 0x0)
++
++#define MODIFY_REG(REG, CLEARMASK, SETMASK)  \
++        WRITE_REG((REG), (((READ_REG(REG)) & (~(CLEARMASK))) | (SETMASK)))
++
++// #define REG_FIELD_WR(reg,field,val)\
++//         do{                                 \
++//         uint32_t old_val = (reg);\
++//         uint32_t new_val = ((unsigned int)(val)<<(field##_POS)&(unsigned int)(field##_MASK))|(old_val &~(unsigned int)(field##_MASK));\
++//         (reg)= new_val;\
++//     }while(0)
++
++void io_cfg_input(uint8_t pin)
++{
++    gpio_port_pin_t *x = (gpio_port_pin_t *)&pin;
++    CLEAR_BIT(SYSC_AWO_BASE + AWO_IO + (AWO_IO_GPIO_SIZE * x->port) + AWO_IO_GPIO_OE_FIR, 1<<16<<x->num);
++    CLEAR_BIT(SYSC_AWO_BASE + AWO_IO + (AWO_IO_GPIO_SIZE * x->port) + AWO_IO_GPIO_IEN_OD, 1<<16<<x->num);
++}
++
++void io_cfg_output(uint8_t pin)
++{
++    gpio_port_pin_t *x = (gpio_port_pin_t *)&pin;
++    SET_BIT(SYSC_AWO_BASE + AWO_IO + (AWO_IO_GPIO_SIZE * x->port) + AWO_IO_GPIO_OE_FIR, 1<<16<<x->num);
++}
++
++void io_cfg_opendrain(uint8_t pin)
++{
++    gpio_port_pin_t *x = (gpio_port_pin_t *)&pin;
++    SET_BIT(SYSC_AWO_BASE + AWO_IO + (AWO_IO_GPIO_SIZE * x->port) + AWO_IO_GPIO_IEN_OD, 1<<x->num);
++}
++
++void io_cfg_pushpull(uint8_t pin)
++{
++    gpio_port_pin_t *x = (gpio_port_pin_t *)&pin;
++    CLEAR_BIT(SYSC_AWO_BASE + AWO_IO + (AWO_IO_GPIO_SIZE * x->port) + AWO_IO_GPIO_IEN_OD, 1<<16<<x->num);
++}
++
++void io_set_pin(uint8_t pin)
++{
++    gpio_port_pin_t *x = (gpio_port_pin_t *)&pin;
++    SET_BIT(SYSC_AWO_BASE + AWO_IO + (AWO_IO_GPIO_SIZE * x->port) + AWO_IO_GPIO_DOT, 1<<x->num);
++}
++
++void io_clr_pin(uint8_t pin)
++{
++    gpio_port_pin_t *x = (gpio_port_pin_t *)&pin;
++    SET_BIT(SYSC_AWO_BASE + AWO_IO + (AWO_IO_GPIO_SIZE * x->port) + AWO_IO_GPIO_DOT, 1<<16<<x->num);
++}
++
++void io_write_pin(uint8_t pin,uint8_t val)
++{
++    if(val)
++    {
++        io_set_pin(pin);
++    }else
++    {
++        io_clr_pin(pin);
++    }
++}
++
++static uint8_t pin2func_io(gpio_port_pin_t *x)
++{
++    return x->port*16+x->num;
++}
++
++static void per_func_enable(uint8_t func_io_num,uint8_t per_func)
++{
++    uint32_t alt_offset = 0;
++    MODIFY_REG(SYSC_PER_BASE + PER_FUNC_SEL + ((func_io_num>>2)<<2), 0xff<<8*(func_io_num%4), per_func<<8*(func_io_num%4));
++    alt_offset = AWO_PIN_SEL1 + (func_io_num >> 5) * 0x4;
++    SET_BIT(SYSC_AWO_BASE + alt_offset, 1 << (func_io_num % 32));
++}
++
++void pinmux_dwuart1_init(uint8_t txd,uint8_t rxd)
++{
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&txd),DWUART1_TXD);
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&rxd),DWUART1_RXD);
++}
++
++void pinmux_espi_init(void)
++{
++    CLEAR_BIT(SYSC_AWO_BASE + AWO_IO + AWO_IO_GPIO_SIZE * 3 + AWO_IO_GPIO_IEN_OD, 0xfe000000);
++    SET_BIT(SYSC_AWO_BASE + AWO_PIN_SEL0, SYSC_AWO_ESPI_EN);
++}
++
++void pinmux_espi_alert_init(void)
++{
++    SET_BIT(SYSC_AWO_BASE + AWO_PIN_SEL0, SYSC_AWO_ESPI_ALERT_EN);
++}
++
++void pinmux_lpc_init(void)
++{
++    CLEAR_BIT(SYSC_AWO_BASE + AWO_IO + AWO_IO_GPIO_SIZE * 3 + AWO_IO_GPIO_IEN_OD, 0xfe000000);
++    SET_BIT(SYSC_AWO_BASE + AWO_PIN_SEL0, SYSC_AWO_LPC_EN);
++}
++
++void pinmux_lpc_serirq_init(void)
++{
++    SET_BIT(SYSC_AWO_BASE + AWO_PIN_SEL0, SYSC_AWO_LPC_SERIRQ_EN);
++}
++
++void pinmux_iic1_init(uint8_t scl,uint8_t sda)
++{
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&scl), IIC1_SCL);
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&sda), IIC1_SDA);
++}
++
++void pinmux_iic2_init(uint8_t scl,uint8_t sda)
++{
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&scl), IIC2_SCL);
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&sda), IIC2_SDA);
++}
++
++void pinmux_iic3_init(uint8_t scl,uint8_t sda)
++{
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&scl), IIC3_SCL);
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&sda), IIC3_SDA);
++}
++
++void pinmux_iic4_init(uint8_t scl,uint8_t sda)
++{
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&scl), IIC4_SCL);
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&sda), IIC4_SDA);
++}
++
++void pinmux_iic5_init(uint8_t scl,uint8_t sda)
++{
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&scl), IIC5_SCL);
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&sda), IIC5_SDA);
++}
++
++void pinmux_iic6_init(uint8_t scl,uint8_t sda)
++{
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&scl), IIC6_SCL);
++    per_func_enable(pin2func_io((gpio_port_pin_t *)&sda), IIC6_SDA);
++}
+-- 
+2.39.2
+
