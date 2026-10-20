@@ -1,0 +1,5 @@
+Common targets are:
+    obmc-phosphor-image
+
+Supported machines:
+    evb-ls2010  (LinkedSemi LS2010 BMC evaluation board)
