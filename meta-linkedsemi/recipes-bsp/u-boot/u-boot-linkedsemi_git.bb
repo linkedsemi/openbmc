@@ -11,3 +11,6 @@ SRCREV = "2af2af9428e4eed725366d8cfa3369024ab8b5d1"
 PV = "v2026.10+git"
 
 DEPENDS += "bc-native dtc-native swig-native"
+
+# Follow the toolchain selected by TCMODE (u-boot.inc hardcodes TARGET_PREFIX).
+EXTRA_OEMAKE += "CROSS_COMPILE=${HOST_PREFIX}"

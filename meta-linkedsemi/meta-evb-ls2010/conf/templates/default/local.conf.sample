@@ -250,3 +250,14 @@ PACKAGECONFIG:append:pn-qemu-system-native = " sdl"
 # server will shut down.
 #
 #BB_SERVER_TIMEOUT = "60"
+
+#
+# LS2010 toolchain
+#
+# This board is built with the prebuilt Xuantie-900 toolchain instead of a
+# toolchain compiled from source.  meta-linkedsemi provides the TCMODE that
+# unpacks the release archive inside the build directory and serves its sysroot
+# as libc and headers, so no gcc/binutils/glibc is built for the target.
+#
+TCMODE = "external-xuantie"
+LICENSE_FLAGS_ACCEPTED += "xuantie-toolchain"

@@ -12,7 +12,7 @@ PACKAGE_ARCH = "${MACHINE_ARCH}"
 inherit deploy
 
 do_compile() {
-	oe_runmake CROSS_COMPILE=${TARGET_PREFIX}
+	oe_runmake CROSS_COMPILE=${HOST_PREFIX}
 }
 
 do_install() {
